@@ -70,7 +70,9 @@ try:
  if not rows: raise RuntimeError('empty score')
  json.dump({'pass':sum(x['status']=='PASS' for x in rows),'total':len(rows),'score_line':score_line,'results':rows},open('result.json','w'),ensure_ascii=False,separators=(',',':'))
  subprocess.run(['gcloud','storage','cp','--quiet','result.json',os.environ['SHIKEN_PREFIX']+'/result.json'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
- if r.returncode: raise RuntimeError('checks failed')
+ # 10/4: tegoro は1問でも FAIL なら 0 以外を返す。点が取れていれば試験は成功。
+ if c.get('mondai_name')=='jiyuu.jsonl':   # 公開問題だけは詳細も残す（Mac との違いを調べる）
+  subprocess.run(['gcloud','storage','cp','--quiet','private-report.md',os.environ['SHIKEN_PREFIX']+'/kouhai-report.md'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 finally:
  server.terminate()
  try: server.wait(timeout=30)
