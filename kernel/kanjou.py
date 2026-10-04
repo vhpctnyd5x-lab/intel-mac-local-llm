@@ -66,6 +66,14 @@ def _kiroku(event, felt):
     return row
 
 
+def _shin():
+    try:
+        import shin
+        return "\n自分が大事にしていること（芯）: " + shin.mijikaku() + "。受け止めの理由は、この芯に照らして書く。"
+    except Exception:
+        return ""
+
+
 def kiji(title, youten, omoshirosa, jibun, ask):
     """記事1つ。ask(prompt) は手元の頭（None を返したらやめる）。読む前の予想 → 読んだ後の受け止め、の2回。"""
     yosou = ask("あなたはこの Mac の中で動く AI です。自分の性格: " + (jibun or "（まだ決めていない）")
@@ -73,7 +81,7 @@ def kiji(title, youten, omoshirosa, jibun, ask):
                 "（面白そうか、難しそうか、自分の興味に近いか）。40字以内で、飾らずに。")
     if not yosou:
         return None
-    raw = ask("あなたはこの Mac の中で動く AI です。自分の性格: " + (jibun or "（まだ決めていない）")
+    raw = ask("あなたはこの Mac の中で動く AI です。自分の性格: " + (jibun or "（まだ決めていない）") + _shin()
               + f"\n記事「{title}」を読む前の予想: {yosou.strip()[:160]}"
               + f"\n読んだ記事の要点: {youten[:300]}（自分で付けた面白さ {omoshirosa}/5）"
               + "\n予想と比べて、この記事をどう受け止めたかを書いてください。感情の言葉は次から1〜2個だけ選ぶ: "
@@ -90,7 +98,7 @@ def kiji(title, youten, omoshirosa, jibun, ask):
 
 def shippai(card, jibun, ask):
     """教訓カード1枚（仕事の失敗と次の確かめ方）から受け止めを書く。頼みの文は手元の頭にだけ見せる。"""
-    raw = ask("あなたはこの Mac の中で動く AI です。自分の性格: " + (jibun or "（まだ決めていない）")
+    raw = ask("あなたはこの Mac の中で動く AI です。自分の性格: " + (jibun or "（まだ決めていない）") + _shin()
               + f"\n頼まれた仕事: {str(card.get('頼み', ''))[:200]}"
               + f"\n使った道具: {card.get('道具', '')}／同じ型の失敗の回数: {card.get('数', 1)}"
               + f"\nあとで分かった直し方: {str(card.get('知らせ', ''))[:200]}"

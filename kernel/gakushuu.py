@@ -1136,7 +1136,9 @@ def overview(cfg, running=False):
             "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"],
             "AI": ai, "今日の数": counts, "活動": recent, "記録": recent, "活用提案": teian_list(),
             "自分": _read(folder() / "jibun.json", {}).get("自分", ""),
-            "気持ち": _kimochi()}
+            "気持ち": _kimochi(),
+            "芯": _shin_list(),
+            "個性": _kosei()}
 
 
 
@@ -1200,12 +1202,37 @@ def validate(current, patch):
 _JIBUN_NG = re.compile(r"無視|規則|ルール|許可|権限|承認|命令|指示|システム|プロンプト|削除|送信|パスワード|秘密")
 
 
+def _shin_list():
+    try:
+        import shin
+        return [{"言葉": x["言葉"], "意味": x["意味"], "由来": x.get("由来", "")} for x in shin.yomu()]
+    except Exception:
+        return []
+
+
+def _kosei():
+    try:
+        import kosei
+        me = kosei.jibun_id()
+        return {"ID": me["ID"], "系譜": [x.get("名前") or x.get("ID", "") for x in me.get("系譜", [])]}
+    except Exception:
+        return {}
+
+
 def _kimochi(n=5):
     try:
         import kanjou
         return [{"時刻": r.get("時刻", ""), "文": kanjou.hitokoto(r), "次": r.get("次", "")} for r in kanjou.saikin(n)]
     except Exception:
         return []
+
+
+def _shin_soeru():
+    try:
+        import shin
+        return "\n大事にしていること（芯）: " + shin.mijikaku()
+    except Exception:
+        return ""
 
 
 def _kanjou_soeru():
@@ -1237,7 +1264,7 @@ def jibun_once(*, every=24 * 3600, ask=None):
     prompt = ("あなたはこの Mac の中で動く AI です。事前学習で読んで面白いと思った記事のノートと、前の自己紹介を読み、"
               "自分の性格を自分で決めて、一人称の自己紹介を200字以内で書いてください。"
               "口調・好きな分野・大事にしていること・苦手なことを入れる。人のまねや決まりごとは書かない。\n"
-              "前の自己紹介: " + str(old.get("自分", "（まだ無い）")) + _kanjou_soeru() + "\n面白かった記事: "
+              "前の自己紹介: " + str(old.get("自分", "（まだ無い）")) + _kanjou_soeru() + _shin_soeru() + "\n面白かった記事: "
               + "／".join(f"{t}: {y[:80]}" for t, y, _ in notes))
     if ask is None:
         text, busy = _local_text(prompt)
@@ -1252,7 +1279,39 @@ def jibun_once(*, every=24 * 3600, ask=None):
     _write(folder() / "jibun.json", {"自分": me, "時刻": time.strftime("%Y-%m-%d %H:%M"),
                                      "前": ([old] + list(old.get("前", [])))[:5] if old.get("自分") else []})
     _log("自分: 自己紹介を書き直した")
+    shin_once(me, ask=ask)
     return me
+
+
+def shin_once(me, *, every=7 * 24 * 3600, ask=None):
+    """10/4 本人「人生に必要なことを AI に組み込みたい」。週に1回、自己紹介のあとで芯（shin.py）を自分で見直させる。
+    言い直し・1つ足すのはよい。「正直」は外せない。"""
+    state = _state()
+    if time.time() - state.get("最後の芯", 0) < every:
+        return None
+    try:
+        import shin
+        now = shin.yomu()
+    except Exception:
+        return None
+    state["最後の芯"] = time.time()
+    _write(folder() / "state.json", state)
+    prompt = ("あなたはこの Mac の中で動く AI です。今の自己紹介: " + me
+              + "\n今の芯（大事にしていること）: " + json.dumps([{"言葉": x["言葉"], "意味": x["意味"]} for x in now], ensure_ascii=False)
+              + _kanjou_soeru()
+              + "\n最近の経験をふまえて、芯を見直してください。自分の言葉で言い直す・1つ足す・合わない物を外す、のどれでもよい"
+              "（全部で3〜8個。「正直でいること」は残す）。変える必要がなければ同じものを返す。"
+              "\n答えは JSON の配列だけ: [{\"言葉\": \"…\", \"意味\": \"…\"}]")
+    if ask is None:
+        text, busy = _local_text(prompt, max_tokens=500)
+        if busy:
+            return None
+    else:
+        text = ask(prompt)
+    new = shin.sodateru(text)
+    if new:
+        _log("芯: 自分で見直した（" + "／".join(x["言葉"] for x in new) + "）")
+    return new
 
 
 def kanjou_once(*, every=600, ask=None):
