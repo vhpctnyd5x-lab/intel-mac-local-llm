@@ -502,6 +502,13 @@ def learn_once(cfg, *, wiki_module=None):
             # 交互の取り直しも始まらず、2,332 記事が要約（中央 189 字）のまま止まっていた。
             if _refetch_one(state, wiki_module):
                 return True
+            # 10/4 本人「ずっと『次の題を待っています』」。題もリンクも尽きたら、ランダムな長めの記事を種にする。
+            seeds = [t for t in _random_titles() if t not in known and _valid_title(t)][:5]
+            if seeds:
+                state["次の題"] = state.get("次の題", []) + [{"題": t, "深さ": 0} for t in seeds]
+                _write(folder() / "state.json", state)
+                _status(f"新しい題を{len(seeds)}つ選びました（{seeds[0]} など）")
+                return True
             _status("次の題を待っています")
             return False
         item = grow[0]
@@ -1298,6 +1305,26 @@ def yoru(opts=None, now=None):
     start, end = opts.get("夜の時間", [0, 7])
     hour = time.localtime(now).tm_hour if now else time.localtime().tm_hour
     return start <= hour < end if start <= end else (hour >= start or hour < end)
+
+
+def _random_titles(keep=5):
+    """題が尽きた時の種。ja.wikipedia の「秀逸な記事」「良質な記事」（質の高いとされた記事）からランダムに選ぶ。
+    10/4: ランダムな記事だと高校・曲名のような雑学ばかりだった。"""
+    import random, urllib.request, urllib.parse
+    titles = []
+    for cat in ("Category:秀逸な記事", "Category:良質な記事"):
+        url = "https://ja.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
+            {"action": "query", "list": "categorymembers", "cmtitle": cat, "cmnamespace": 0, "cmlimit": 500,
+             "cmsort": "timestamp", "cmdir": random.choice(["asc", "desc"]), "format": "json"})
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "kernel-ai-gakushuu/1.0 (local learning)"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                rows = json.load(r).get("query", {}).get("categorymembers", [])
+            titles += [x["title"] for x in rows]
+        except Exception:
+            continue
+    random.shuffle(titles)
+    return titles[:keep * 20]
 
 
 def _cfg_learning():
