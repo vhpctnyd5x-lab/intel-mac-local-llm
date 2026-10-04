@@ -1280,6 +1280,12 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
         _add_trigram(db, cursor.lastrowid, title, body, source)
         _add_article_edges(db, title, body, item.get("ほかの候補", []) or [])
     _log(f"{source}: {title}（{len(body)}字）")
+    try:   # 10/4 本人: Wikipedia の合間に読んでいても「次の題を待っています」のままに見えた
+        import nooto
+        written, total = nooto.kazu()
+        _status(f"{source}「{title}」を読みました（ノート {written}/{total}）")
+    except Exception:
+        _status(f"{source}「{title}」を読みました")
     return title
 
 
