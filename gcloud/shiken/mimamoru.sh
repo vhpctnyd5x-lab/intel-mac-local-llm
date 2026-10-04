@@ -1,6 +1,6 @@
 #!/bin/bash
 # 起動後の状態を確認する。引数: PROJECT ZONE INSTANCE BUCKET RUN_ID SA ROLE CONDITION [分=250]
-set -Eeuo pipefail
+set -uo pipefail   # 10/4: gcloud の一時的な失敗で黙って抜けていた
 PROJECT=${1:?}; ZONE=${2:?}; NAME=${3:?}; BUCKET=${4:?}; RUN=${5:?}; SA=${6:?}; ROLE=${7:?}; CONDITION=${8:?}; LIMIT=${9:-250}
 PREFIX="gs://$BUCKET/shiken/$RUN"; START=$(date +%s); TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 cleanup(){

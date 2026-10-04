@@ -32,7 +32,7 @@ tar -xzf llama-src.tar.gz; tar -xzf code.tar.gz; [ -d llama-src ] || mv src llam
 export KERNEL_KIROKU_DIR="$WORK/state/kiroku" KERNEL_HIKAE_DIR="$WORK/state/hikae" KERNEL_HIKAE_PATH="$WORK/state/hikae" KERNEL_TSUIKA_DIR="$WORK/state/tsuika" KERNEL_WAZA_DIR="$WORK/state/waza"
 mkdir -p "$KERNEL_KIROKU_DIR" "$KERNEL_HIKAE_DIR" "$KERNEL_TSUIKA_DIR" "$KERNEL_WAZA_DIR"
 NOTE="llama.cpp CPUビルド"; write_status
-cmake -S llama-src -B llama-src/build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_METAL=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+cmake -S llama-src -B llama-src/build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_AVX512=OFF -DGGML_AMX_TILE=OFF -DGGML_AMX_INT8=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
 cmake --build llama-src/build --target llama-server -j 8
 NOTE="模型取得"; write_status
 gcloud storage cp --quiet "gs://$BUCKET/models/Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf" model.gguf
@@ -46,10 +46,11 @@ for a in args:
   k,v=a.split('=',1); env[k]=v
  else: rest.append(a)
 cmd=['llama-src/build/bin/llama-server','-m','model.gguf','--host','127.0.0.1','--port','8080','-t','8','-ngl','0','-c','8192','-np','1','-cb','-ub','256','--cache-reuse','16','-fa','off','--reasoning-format','none',*rest]
-server=subprocess.Popen(cmd,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=env)
+slog=open('server.log','w'); server=subprocess.Popen(cmd,stdout=slog,stderr=subprocess.STDOUT,env=env)   # 起動の失敗が見えるように
 try:
  for _ in range(360):
-  if server.poll() is not None: raise RuntimeError('server stopped')
+  if server.poll() is not None:
+   import sys; sys.stderr.write(''.join(open('server.log',errors='replace').readlines()[-25:])); sys.stderr.write(subprocess.run(['bash','-c','dmesg | tail -5; free -g; nproc; grep -o -m1 "avx512[a-z]*" /proc/cpuinfo'],capture_output=True,text=True).stdout); raise RuntimeError(f'server stopped rc={server.returncode}')
   try: urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=2); break
   except Exception: time.sleep(5)
  else: raise RuntimeError('server startup timeout')
