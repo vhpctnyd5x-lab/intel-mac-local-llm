@@ -131,7 +131,7 @@ gcloud compute instances create "$NAME" --project="$PROJECT" --zone="$ZONE" \
   --image-family=debian-12 --image-project=debian-cloud \
   --boot-disk-size=100GB --boot-disk-type=pd-standard --boot-disk-auto-delete \
   --service-account="$SA" --scopes=cloud-platform \
-  --metadata="chishiki-bucket=$BUCKET,chishiki-run=$RUN_ID,chishiki-bundle-sha256=$BUNDLE_SHA,chishiki-wiki-limit=$WIKI_LIMIT,chishiki-max-chars=$MAX_CHARS,chishiki-workers=$WORKERS" \
+  --metadata="chishiki-bucket=$BUCKET,chishiki-run=$RUN_ID,chishiki-bundle-sha256=$BUNDLE_SHA,chishiki-wiki-limit=$WIKI_LIMIT,chishiki-max-chars=$MAX_CHARS,chishiki-workers=$WORKERS${STAGE:+,chishiki-stage=$STAGE}" \
   --metadata-from-file="startup-script=$HERE/vm_startup.sh" --quiet
 # 10/3: 裏の仕事は2時間で切れる。切れると cleanup が VM を消すので、起動したら状態を書いて手を離す。
 #   見張りと後片付け（SA・IAM）は mimamoru.sh が何度でも引き継ぐ。

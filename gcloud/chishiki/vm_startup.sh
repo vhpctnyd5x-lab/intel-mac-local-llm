@@ -14,6 +14,7 @@ BUNDLE_SHA=$(meta chishiki-bundle-sha256)
 WIKI_LIMIT=$(meta chishiki-wiki-limit)
 MAX_CHARS=$(meta chishiki-max-chars)
 WORKERS=$(meta chishiki-workers)
+STAGE=$(meta chishiki-stage 2>/dev/null || true)   # 10/4: 途中の箱（gs://…stage）があれば索引だけ作る
 PREFIX="gs://$BUCKET/runs/$RUN_ID"
 STATUS=running
 NOTE=起動
@@ -49,6 +50,14 @@ mkdir code
 tar -xzf bundle.tar.gz -C code
 python3 -m venv venv
 venv/bin/pip install --disable-pip-version-check --no-cache-dir -r code/requirements.txt
+if [ -n "$STAGE" ]; then
+NOTE=途中の箱を取得; write_status
+gcloud storage cp --quiet "$STAGE" stage.sqlite3
+echo stage >aozora-commit.txt; mkdir -p dumps; echo '{}' >dumps/stage-dumpstatus.json
+NOTE=索引作成（本文枝なし）; write_status
+( while sleep 600; do gcloud storage cp --quiet startup.log "$PREFIX/startup.log" >/dev/null 2>&1; done ) &
+venv/bin/python code/henkan.py --output chishiki.sqlite3 --from-stage stage.sqlite3 --no-body-edges
+else
 NOTE=公開ダンプ取得; write_status
 venv/bin/python code/fetch.py --directory dumps --site jawiki --site jawikibooks --site jawikisource
 git clone --depth 1 --single-branch https://github.com/aozorahack/aozorabunko_text.git aozora
@@ -67,6 +76,7 @@ for site in ('jawiki', 'jawikibooks', 'jawikisource'):
         cmd += ['--wiki', site, path]
 subprocess.run(cmd, check=True)
 PY
+fi
 NOTE=出来上がりをGCSへ保存; write_status
 gcloud storage cp --quiet chishiki.sqlite3 chishiki.json chishiki.sha256 aozora-commit.txt "$PREFIX/"
 gcloud storage cp --quiet dumps/*-dumpstatus.json "$PREFIX/"

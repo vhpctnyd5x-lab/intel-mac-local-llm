@@ -144,8 +144,12 @@ def build(args):
     for path in (output, stage_path, partial):
         if path.exists():
             raise FileExistsError(f'上書きしません: {path}')
-    stage = sqlite3.connect(stage_path)
-    stage.execute('CREATE TABLE articles(slot INTEGER PRIMARY KEY,title TEXT UNIQUE,text TEXT,source TEXT,url TEXT,links TEXT)')
+    if args.from_stage:   # 10/4: 本文枝で12時間を超えた。保険に取った途中の箱から索引だけ作り直す
+        os.replace(args.from_stage, stage_path)
+        stage = sqlite3.connect(stage_path)
+    else:
+        stage = sqlite3.connect(stage_path)
+        stage.execute('CREATE TABLE articles(slot INTEGER PRIMARY KEY,title TEXT UNIQUE,text TEXT,source TEXT,url TEXT,links TEXT)')
     rng = random.Random(args.seed)
     stats, eligible, selected = {}, 0, 0
     for site, path in args.wiki:
@@ -198,9 +202,10 @@ def build(args):
             db.commit()
             log(f'索引 {i:,}件')
     db.commit()
-    log('本文枝を一括照合')
-    add_body_edges(db, progress=lambda n: log(f'本文枝 {n:,}件を走査'))
-    db.commit()
+    if not args.no_body_edges:
+        log('本文枝を一括照合')
+        add_body_edges(db, progress=lambda n: log(f'本文枝 {n:,}件を走査'))
+        db.commit()
     for table in ('chishiki', 'chishiki_trigram'):
         db.execute(f"INSERT INTO {table}({table}) VALUES('optimize')")
         db.commit()
@@ -232,8 +237,10 @@ def main():
     p.add_argument('--max-chars', type=int, default=8000)
     p.add_argument('--workers', type=int, default=max(1, min(6, os.cpu_count() or 1)))
     p.add_argument('--seed', type=int, default=20261003)
+    p.add_argument('--from-stage', type=Path, help='途中の箱（articles 表）から索引だけ作る')
+    p.add_argument('--no-body-edges', action='store_true', help='本文枝を作らない（遅い。リンク枝は作る）')
     args = p.parse_args()
-    if not args.wiki and not args.aozora:
+    if not args.wiki and not args.aozora and not args.from_stage:
         p.error('--wiki または --aozora が必要')
     sites = [s for s, _ in args.wiki]
     if any(s not in SOURCES for s in sites):
