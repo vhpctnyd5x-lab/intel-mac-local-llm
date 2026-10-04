@@ -1191,7 +1191,7 @@ HDD の機械性能でもなく、**USB 2.0 の実用上限 40MB/s に張り付�
 3. 同じ物理ディスクの APFS 領域（`/Volumes/Backup` 932GB）は **Time Machine の保存先**。
    研究データは置かない。使えるのは exFAT 側（1.7TB空き）だけ。
 
-### 44-D. 運用の決め（本人さんの方針: 保管は外付けに寄せる）
+### 44-D. 運用の決め（本人の方針: 保管は外付けに寄せる）
 
 ```
 外付け exFAT (1.7TB) … 退避・原本・測り終えたGGUF・実験の記録。既定の置き場
@@ -1524,7 +1524,7 @@ Cerebras の REAP が「25%削減で1ポイント以内」と言えるのは、*
 
 | 領域 | 中身 | 素材 |
 |---|---|---|
-| `ja` | 本人さんの日本語（実験46と同じ） | `data/calib/jibun/train.txt` |
+| `ja` | 本人の日本語（実験46と同じ） | `data/calib/jibun/train.txt` |
 | `code` | ライブラリ系Python 37本 | llama.cpp の `gguf-py` ほか |
 | `algo` | アルゴリズム系Python 45本 | Python標準ライブラリの純Python実装 |
 | `en` | Wikipedia散文52節＋llama.cpp技術文書40本 | wikitext-2 test を整形＋`docs/*.md` |
