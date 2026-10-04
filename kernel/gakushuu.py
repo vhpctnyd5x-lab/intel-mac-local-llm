@@ -283,6 +283,8 @@ def used_bytes():
                 total += p.stat().st_size
         except (OSError, UnicodeError):
             pass
+    for p in (folder() / "jisaku_skills").glob("*.md"):
+        total += p.stat().st_size
     return total
 
 
@@ -419,25 +421,47 @@ def _too_close(candidate, near):
     return False
 
 
+def _interest_link_relevant(title, interests):
+    """興味のテーマ・問いと候補題の内容語が重なるリンクだけを選ぶ。"""
+    def terms(value):
+        words = set(re.findall(r"[a-z0-9]{2,}|[一-龯々ぁ-んァ-ヶー]{2,}", str(value or "").lower()))
+        for word in tuple(words):
+            words.update(word[i:i + 2] for i in range(len(word) - 1))
+        return words
+    desired = set()
+    for item in interests:
+        if isinstance(item, dict):
+            desired |= terms(" ".join(str(item.get(k, "")) for k in ("テーマ", "問い", "題")))
+    return bool((desired & terms(title)) - {"する", "ある", "こと", "もの", "など", "について"})
+
+
+def _interest_link_picks(candidates, interests, limit=3):
+    if not interests:
+        return list(candidates)
+    return [title for title in candidates if _interest_link_relevant(title, interests)][:limit]
+
+
 def _topic_entry(state, known, use_conversation=False):
     state = _version_state(state)
     seen = set(state.get("見た題", []))
     queue = []
     for item in state.get("次の題", []):
         if isinstance(item, dict):
-            queue.append((item.get("題"), int(item.get("深さ", 1) or 1)))
+            queue.append((item.get("題"), int(item.get("深さ", 1) or 1), bool(item.get("興味"))))
         else:
-            queue.append((item, 1))
-    queue += [(title, 1) for title in (_recent_topics() if use_conversation else [])]
-    queue += [(title, 0) for title in LEARN_SEEDS]
-    for title, depth in queue:
+            queue.append((item, 1, False))
+    queue = [(x.get("題"), 0, True) for x in state.get("興味", []) if isinstance(x, dict) and x.get("題")] + queue
+    queue += [(title, 1, False) for title in (_recent_topics() if use_conversation else [])]
+    if not state.get("芽探索済み") and not state.get("興味"):
+        queue += [(title, 0, False) for title in LEARN_SEEDS]
+    for title, depth, interest in queue:
         # 種は選んで置いた題なので「(」を含んでもよい（例 ファイル (コンピュータ)）。絞るのはリンクから来た題だけ。
         if _valid_title(title) or (depth == 0 and isinstance(title, str) and len(title.strip()) >= 2):
             title = title.strip()[:80]
             if depth > 0 and _too_close(title, state.get("見た題", [])[-10:]):
                 continue   # 前から並んでいた名前の似た題も飛ばす
             if title not in known and title not in seen:
-                return title, depth
+                return title, depth, interest
     return None
 
 
@@ -502,31 +526,28 @@ def learn_once(cfg, *, wiki_module=None):
             # 交互の取り直しも始まらず、2,332 記事が要約（中央 189 字）のまま止まっていた。
             if _refetch_one(state, wiki_module):
                 return True
-            # 10/4 本人「ずっと『次の題を待っています』」。題もリンクも尽きたら、ランダムな長めの記事を種にする。
-            seeds = [t for t in _random_titles() if t not in known and _valid_title(t)][:5]
-            if seeds:
-                state["次の題"] = state.get("次の題", []) + [{"題": t, "深さ": 0} for t in seeds]
-                _write(folder() / "state.json", state)
-                _status(f"新しい題を{len(seeds)}つ選びました（{seeds[0]} など）")
-                return True
-            _status("次の題を待っています")
+            _status("興味に沿う題が尽きたので休みます" if state.get("芽探索済み") else "次の題を待っています")
             return False
         item = grow[0]
         article = _wiki(wiki_module.ask, item["題"], chars=5000) or {}
         queued = {x.get("題") if isinstance(x, dict) else x for x in state.get("次の題", [])}
         additions = []
-        for candidate in article.get("ほかの候補", []):
+        interests = state.get("興味", [])
+        for candidate in _interest_link_picks(article.get("ほかの候補", []), interests):
             if (_valid_title(candidate) and candidate not in known and candidate not in queued
                     and candidate not in state.get("見た題", [])
                     and not _too_close(candidate, [item["題"]] + state.get("見た題", [])[-10:])):
-                additions.append({"題": candidate.strip()[:80], "深さ": int(item.get("深さ", 1)) + 1})
+                if interests and not item.get("興味"):
+                    continue
+                additions.append({"題": candidate.strip()[:80], "深さ": int(item.get("深さ", 1)) + 1,
+                                  **({"興味": True} if interests else {})})
                 queued.add(candidate)
-                if len(additions) == 5:
+                if len(additions) == (3 if interests else 5):
                     break
         _status(f"リンクを広げた: {item['題']}（{len(additions)}題）", 広げる=grow[1:],
                 次の題=(state.get("次の題", []) + additions)[:100])
         return False
-    title, depth = entry
+    title, depth, interest_path = entry
     # wiki.py が User-Agent と2秒以上の間隔を管理する。
     article = _wiki(wiki_module.ask, title, chars=5000)
     if not article or not article.get("本文"):
@@ -555,20 +576,29 @@ def learn_once(cfg, *, wiki_module=None):
     if depth < MAX_DEPTH:
         additions = []
         queued = {x.get("題") if isinstance(x, dict) else x for x in remaining}
-        for candidate in article.get("ほかの候補", []):
+        interests = state.get("興味", [])
+        for candidate in _interest_link_picks(article.get("ほかの候補", []), interests):
             if (not _valid_title(candidate) or candidate in known or candidate in queued
                     or candidate in state.get("見た題", [])
                     or _too_close(candidate, [title, actual] + state.get("見た題", [])[-10:])):
                 continue
-            additions.append({"題": candidate.strip()[:80], "深さ": depth + 1})
+            if interests and not interest_path:
+                continue
+            additions.append({"題": candidate.strip()[:80], "深さ": depth + 1,
+                              **({"興味": True} if interests else {})})
             queued.add(candidate)
-            if len(additions) == 5:
+            if len(additions) == (3 if interests else 5):
                 break
         remaining += additions
     state["次は本文取り直し"] = True
     state["全文を読んだ題"] = list(state.get("全文を読んだ題", []))
     _log(f"Wikipedia: {actual}（{len(body)}字）")
-    _status(f"記事を覚えた: {actual}", 最後の題=actual, 次の題=remaining[:100],
+    try:
+        import kyoumi
+        question = kyoumi.question_for(actual, state)
+    except ImportError:
+        question = ""
+    _status(f"記事を覚えた: {actual}", 最後の題=actual, 読書中の問い=question, 次の題=remaining[:100],
             次は本文取り直し=True, 全文を読んだ題=state.get("全文を読んだ題", []),
             見た題=(state.get("見た題", []) + [title])[-500:])
     return True
@@ -607,6 +637,12 @@ def skills():
                         out[p.stem] = item
                 except (OSError, UnicodeError):
                     pass
+    try:
+        import kyoumi
+        for item in kyoumi.self_skills():
+            out.setdefault(item["name"], item)
+    except (ImportError, OSError, ValueError):
+        pass
     return list(out.values())
 
 
@@ -1092,6 +1128,7 @@ def reflect_once(cfg, *, ask=None, network=None):
 
 def overview(cfg, running=False):
     opts = {**DEFAULT, **cfg.get("事前学習", {})}
+    current = _state()
     try:
         with _db() as db:
             count = db.execute("SELECT count(*) FROM chishiki").fetchone()[0]
@@ -1126,7 +1163,9 @@ def overview(cfg, running=False):
           "振り返り": {"モデル": "手元 Qwen3.6", "思考": "なし", "上限トークン": 300},
           "活かす役": {"モデル": "手元 Qwen3.6", "思考": "なし", "上限トークン": 600},
           "確かめ": {"モデル": external, "思考の深さ": "high（外の先生）"}}
-    return {"入": opts["入"], "動いている": running, "いま": _state().get("いま", "待機中"),
+    interest_line = "／".join(x.get("テーマ", "") for x in current.get("興味", []) if isinstance(x, dict)) or "芽を探す入口を読み、興味が出るまで休む"
+    one_line = f"{current.get('いま', '待機中')}／いまの興味: {interest_line}／問い: {current.get('読書中の問い', '') or '—'}"
+    return {"入": opts["入"], "動いている": running, "いま": one_line,
             "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count, "覚え書き": memory["数"]},
             "覚え書き": memory["一覧"],
             "つながり": branches,
@@ -1138,7 +1177,7 @@ def overview(cfg, running=False):
             "自分": _read(folder() / "jibun.json", {}).get("自分", ""),
             "気持ち": _kimochi(),
             "芯": _shin_list(),
-            "個性": _kosei()}
+            "個性": _kosei(), **__import__("kyoumi").status()}
 
 
 
@@ -1384,6 +1423,8 @@ def _kanjou_yoseru(state, title, n=3):
 
 def _local_text(prompt, max_tokens=400):
     """手元の頭に枠1で短く書かせる。会話が始まったら（busy）やめる。"""
+    if (folder() / "busy").exists():
+        return None, True
     payload = {"model": "local:main", "messages": [{"role": "user", "content": prompt}], "max_tokens": max_tokens,
                "temperature": 0.7, "chat_template_kwargs": {"enable_thinking": False}, **_side_slot()}
     try:
@@ -1414,9 +1455,15 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
             return None
     turn = int(state.get("ほかの資料の順", 0))
     name = SHIRYOU_JUN[turn % len(SHIRYOU_JUN)]
+    interests = state.get("興味", [])
+    current_interest = next((x for x in interests if isinstance(x, dict) and x.get("問い")), {})
+    search_question = str(current_interest.get("問い") or current_interest.get("テーマ") or "")[:160]
     state["最後のほかの資料"], state["ほかの資料の順"] = time.time(), turn + 1
     _write(folder() / "state.json", state)
-    item = toru(name)
+    try:
+        item = toru(name, search_question or None)
+    except TypeError:  # 既存の試験用・古い取り込み関数
+        item = toru(name)
     if not item or not item.get("題") or len(str(item.get("本文", ""))) < 200:
         return None
     title, body, source = str(item["題"])[:120], str(item["本文"])[:8000], str(item.get("出どころ") or name)
@@ -1435,9 +1482,10 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
     try:   # 10/4 本人: Wikipedia の合間に読んでいても「次の題を待っています」のままに見えた
         import nooto
         written, total = nooto.kazu()
-        _status(f"{source}「{title}」を読みました（ノート {written}/{total}）")
+        _status(f"{source}「{title}」を読みました（ノート {written}/{total}）", 最後の題=title,
+                読書中の問い=search_question)
     except Exception:
-        _status(f"{source}「{title}」を読みました")
+        _status(f"{source}「{title}」を読みました", 最後の題=title, 読書中の問い=search_question)
     return title
 
 
@@ -1495,6 +1543,11 @@ def nooto_once(*, every=60, kazu=12):
         try:
             import nooto
             written = nooto.umeru(kazu)
+            try:
+                import kyoumi
+                kyoumi.answer_note_question()
+            except (ImportError, OSError, sqlite3.Error):
+                pass
             if written:
                 _log(f"ノート: {written} 記事に要点を書いた（{nooto.kazu()[0]}/{nooto.kazu()[1]}）")
         except Exception as error:
@@ -1556,12 +1609,24 @@ def run():
                 elif used_bytes() >= opts.get("上限MB", 2048) * 1024 * 1024:
                     _status("容量の上限で休み")
                 else:
+                    night = yoru(opts)
+                    if not night:
+                        try:
+                            import kyoumi
+                            kyoumi.interests_once()
+                        except (ImportError, OSError, ValueError, sqlite3.Error):
+                            pass
                     if opts.get("出どころ", {}).get("Wikipedia", True):
                         learn_once(cfg)
-                    night = yoru(opts)
                     if not night:   # 振り返り・技の提案・自己紹介は手元の頭脳を使うので、夜は休む
                         reflect_once(cfg)
                         make_teian_once(cfg)
+                        try:
+                            import kyoumi
+                            kyoumi.hakken_once()
+                            kyoumi.create_self_skill_once()
+                        except (ImportError, OSError, ValueError, sqlite3.Error):
+                            pass
                     kyoukun_once()
                     if opts.get("出どころ", {}).get("ほかの資料", True):
                         shiryou_once()

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import re
 import http.server
 import os
 import platform
@@ -78,16 +80,113 @@ def _protected_paths(home: str, extra_roots: Iterable[str | os.PathLike[str]] = 
         os.path.join(home, "Library", "LaunchAgents"),
         *(os.path.join(home, name) for name in _SHELL_CONFIGS),
         os.path.join(home, ".config", "git"),
+        *_private_paths(home),
         *extra_roots,
     ]
     protected: list[str] = []
     for raw in candidates:
         lexical = _home_path(raw, home)
         for path in (lexical, os.path.realpath(lexical)):
+            if path != lexical and _inside(os.path.realpath(home), path):
+                continue   # symlink の行き先がホームやその親なら外す（ホーム全体が書けなくなる）
             if path not in protected:
                 protected.append(path)
     return protected
 
+
+
+_SCOPE = threading.local()
+
+
+def _inside(path, root):
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _private_paths(home):
+    roots = [os.path.join(home, name) for name in (".claude", ".codex", ".claude.json", ".ssh", ".aws", ".gnupg", ".netrc", ".config/gh", "Library/Keychains", "Library/Application Support/kernel-ai")]
+    roots += [os.path.join(home, "LocalAI_mirror", "kernel")]
+    roots += [str(Path(__file__).resolve()), str(Path(__file__).resolve().parent / "kyoudou.py")]
+    roots += [os.path.join(home, "LocalAI_mirror", "koukai", rel) for rel in (
+        "dougu/hako.py", "dougu/jiyuu.py", "kernel/hako.py", "kernel/kyoudou.py", "kernel/server.py", "kernel/chats.py", "kernel/loop.py", "kernel/conversation.py")]
+    roots += [str(p) for p in Path(home).glob(".*.env")]
+    # 保護先が symlink なら行き先も守る。ただし行き先がホームそのもの・その親なら外す（~/.gnupg → ~ でホーム全体が塞がる）
+    real_home = os.path.realpath(home)
+    out = []
+    for root in roots:
+        out.append(root)
+        real = os.path.realpath(root)
+        if real != root and not _inside(real_home, real):
+            out.append(real)
+    return list(dict.fromkeys(out))
+
+
+def normalize_folders(paths, home=None):
+    home = home or os.path.expanduser("~")
+    if paths is None:   # 既定はホーム（試験などでホームがまだ無くても通す）
+        return [os.path.realpath(home)]
+    if not isinstance(paths, (list, tuple)) or not paths or len(paths) > 32:
+        raise ValueError("触ってよいフォルダを1〜32個選んでください")
+    roots = []
+    for raw in paths:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("フォルダのパスが空です")
+        root = os.path.realpath(_home_path(raw, home))
+        if not os.path.isdir(root) or any(_inside(root, p) for p in _private_paths(home)):
+            raise ValueError("選べないフォルダです: " + raw)
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+@contextlib.contextmanager
+def scope(paths):
+    previous = getattr(_SCOPE, "paths", None)
+    _SCOPE.paths = normalize_folders(paths)
+    try:
+        yield
+    finally:
+        _SCOPE.paths = previous
+
+
+def check_path(raw, write=False, paths=None, home=None):
+    home = home or os.path.expanduser("~")
+    lexical = _home_path(raw, home)
+    real = os.path.realpath(lexical)
+    for candidate in (lexical, real):
+        if any(_inside(candidate, p) for p in _private_paths(home)):
+            return False
+        if re.match(r"^\.[^/]*\.env$", os.path.relpath(candidate, home).split(os.sep)[0]):
+            return False
+        if write and any(_inside(candidate, p) for p in _protected_paths(home)):
+            return False
+    roots = paths if paths is not None else getattr(_SCOPE, "paths", None)
+    return not write or any(_inside(real, os.path.realpath(_home_path(p, home))) for p in (roots or [home]))
+
+
+def _write_roots(paths, home):
+    if paths is None:
+        paths = getattr(_SCOPE, "paths", None)
+    return normalize_folders(paths, home)
+
+
+def _linux_writable(root, protected, home):
+    # 保護先の親はroのまま。名前変更や新規 .*.env による迂回を止める。
+    if any(_inside(root, p) for p in protected):
+        return []
+    if root != home and not any(_inside(p, root) for p in protected) and not _inside(home, root):
+        return [root]
+    result = []
+    for child in Path(root).iterdir():
+        value = str(child)
+        if child.is_symlink() or (root == home and re.match(r"^\..*\.env$", child.name)):
+            continue
+        if any(_inside(value, p) for p in protected):
+            continue
+        if child.is_dir():
+            result.extend(_linux_writable(value, protected, home))
+        elif child.is_file():
+            result.append(value)
+    return result
 
 def build_profile(
     risk: str,
@@ -96,6 +195,7 @@ def build_profile(
     home: str | os.PathLike[str] | None = None,
     tmpdir: str | os.PathLike[str] | None = None,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    allowed_roots: Iterable[str | os.PathLike[str]] | None = None,
     deny_unlink: bool = False,
 ) -> str:
     """risk と承認状態から SBPL profile を作る。"""
@@ -130,8 +230,13 @@ def build_profile(
 
     if risk in {"戻せる", "戻せない"}:
         # LaunchServices と Apple Events はアプリ操作に必要。見る profile には渡さない。
+        # LaunchServices と Apple Events はアプリ起動（open -a）・音量など（osascript）に要る（J08〜J10）。
+        # 何を送るかは jiyuu の門番が危険度と承認で決める。
         lines.extend(("(allow lsopen)", "(allow appleevent-send)"))
-        lines.append("(allow file-write*)")
+        write_roots = _write_roots(allowed_roots, home_path)
+        write_roots += [os.path.realpath(tmpdir)] if tmpdir else []
+        lines.append('(allow file-write* (literal "/dev/null") (literal "/dev/tty") ' +
+                     " ".join(f"(subpath {_sbpl_string(p)})" for p in write_roots) + ")")
     else:
         write_paths = ['(literal "/dev/null")', '(literal "/dev/tty")']
         if tmpdir:
@@ -141,6 +246,10 @@ def build_profile(
 
     for path in _protected_paths(home_path, protected_roots):
         lines.append(f"(deny file-write* (subpath {_sbpl_string(path)}))")
+    for path in _private_paths(home_path):
+        lines.append(f"(deny file-read* (subpath {_sbpl_string(path)}))")
+    env_pattern = "^" + re.escape(home_path) + r"/\.[^/]*\.env(/.*)?$"
+    lines.append('(deny file-read* file-write* (regex #' + _sbpl_string(env_pattern) + '))')
     for pattern in _PACKAGE_PATTERNS:
         lines.append(f'(deny file-write* (regex #"{pattern}"))')
 
@@ -177,6 +286,7 @@ def _bwrap_argv(
     home: str | os.PathLike[str] | None = None,
     tmpdir: str | os.PathLike[str] | None = None,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    allowed_roots: Iterable[str | os.PathLike[str]] | None = None,
     deny_unlink: bool = False,
     env: dict[str, str] | None = None,
 ) -> list[str]:
@@ -190,12 +300,16 @@ def _bwrap_argv(
     env_home = env.get("HOME") or str(Path.home())
     home_path = _home_path(home or env_home, env_home)
     tmpdir = tmpdir if tmpdir is not None else env.get("TMPDIR")
-    args = [executable, "--die-with-parent", "--new-session"]
+    args = [executable, "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc"]
     if not network_approved:
         args.append("--unshare-net")
-    # 閲覧は read-only のルートに一時領域だけを重ねる。変更可能な処理は
-    # 既存の SBPL と同じく保護対象以外のホスト領域を書き込み可能にする。
-    args += (["--ro-bind", "/", "/"] if risk == "見る" else ["--bind", "/", "/"])
+    # ホスト全体はro。許可された枝だけrwにして、保護先の親はroのまま残す。
+    args += ["--ro-bind", "/", "/"]
+    protected = _protected_paths(home_path, protected_roots)
+    if risk in {"戻せる", "戻せない"}:
+        for root in _write_roots(allowed_roots, home_path):
+            for path in _linux_writable(root, protected, home_path):
+                args += ["--bind", path, path]
     args += ["--dev", "/dev", "--proc", "/proc", "--setenv", "HOME", home_path]
     if tmpdir:
         tmp_path = os.path.realpath(os.fspath(tmpdir))
@@ -212,6 +326,11 @@ def _bwrap_argv(
             for package in (node_modules / "@anthropic-ai", node_modules / "@openai" / "codex"):
                 if package.exists():
                     args += ["--ro-bind", str(package), str(package)]
+    for path in _private_paths(home_path):
+        if os.path.isdir(path):
+            args += ["--tmpfs", path, "--remount-ro", path]
+        elif os.path.lexists(path):
+            args += ["--ro-bind", "/dev/null", path]
     args += ["--", "/bin/bash", "-lc", command]
     return args
 
@@ -222,18 +341,19 @@ def command_argv(
     risk: str,
     network_approved: bool = False,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    allowed_roots: Iterable[str | os.PathLike[str]] | None = None,
     deny_unlink: bool = False,
     env: dict[str, str] | None = None,
 ) -> list[str]:
     """sandbox 内で実行する argv。darwin では従来の形を維持する。"""
     if sys.platform == "linux":
         return _bwrap_argv(command, risk=risk, network_approved=network_approved,
-                           protected_roots=protected_roots, deny_unlink=deny_unlink, env=env)
+                           protected_roots=protected_roots, allowed_roots=allowed_roots, deny_unlink=deny_unlink, env=env)
     executable = _sandbox_executable(env)
     profile = build_profile(risk, network_approved,
                             home=(env or os.environ).get("HOME"),
                             tmpdir=(env or os.environ).get("TMPDIR"),
-                            protected_roots=protected_roots, deny_unlink=deny_unlink)
+                            protected_roots=protected_roots, allowed_roots=allowed_roots, deny_unlink=deny_unlink)
     return [executable, "-p", profile, "/bin/zsh", "-lc", command]
 
 
@@ -251,6 +371,7 @@ def run(
     risk: str,
     network_approved: bool = False,
     protected_roots: Iterable[str | os.PathLike[str]] = (),
+    allowed_roots: Iterable[str | os.PathLike[str]] | None = None,
     deny_unlink: bool = False,
     **kwargs,
 ) -> subprocess.CompletedProcess:
@@ -258,7 +379,7 @@ def run(
     if sys.platform == "linux":
         try:
             return subprocess.run(command_argv(command, risk=risk, network_approved=network_approved,
-                                               protected_roots=protected_roots, deny_unlink=deny_unlink, env=env), **kwargs)
+                                               protected_roots=protected_roots, allowed_roots=allowed_roots, deny_unlink=deny_unlink, env=env), **kwargs)
         except OSError as error:
             raise SandboxUnavailable("bubblewrap を起動できません") from error
     executable = _sandbox_executable(env)
@@ -268,6 +389,7 @@ def run(
         home=(env or os.environ).get("HOME"),
         tmpdir=(env or os.environ).get("TMPDIR"),
         protected_roots=protected_roots,
+        allowed_roots=allowed_roots,
         deny_unlink=deny_unlink,
     )
     try:

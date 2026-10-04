@@ -29,6 +29,8 @@ import settings as S
 import main as cli
 import chats
 import feedback
+import conversation as conversation_context
+import loop as conversation_loop
 
 TOKEN = secrets.token_urlsafe(24)
 
@@ -811,43 +813,151 @@ class _Nagashi(io.TextIOBase):
 
 
 def _kyoudou_history(cid):
-    if not cid:
-        return []
+    return conversation_context.history(chats.load(cid)) if cid else []
+
+
+_CONTEXT_METER = conversation_context.Meter()
+_REQUEST_CONVERSATION = threading.local()
+
+
+def _conversation_options(cid):
+    c = chats.load(cid) if cid else None
+    return {"触ってよいフォルダ": (c or {}).get("触ってよいフォルダ", [os.path.expanduser("~")]),
+            "要約": (c or {}).get("要約", "")}
+
+
+def _conversation_view(cid):
+    c = chats.load(cid) if cid else None
+    return {"会話": cid, "動き": (c or {}).get("動き", []), **_conversation_options(cid),
+            "loop": (c or {}).get("loop", {}),
+            "承認": chats.get_state(cid).get("approval") if c else None,
+            "いれもの": _CONTEXT_METER.measure(c, CTX["設定"]) if c else
+                {"使った": 0, "上限": int(os.environ.get("KERNEL_N_CTX", 32768)), "割合": 0, "推定": True}}
+
+
+def _special_request(text, cid, tomeru):
+    if text in {"/compact", "/圧縮"}:
+        with _LOCK, _gakushuu_busy(), _temoto_tsukau():
+            ok, why = moderu_youi(KYOUDOU_MODERU["kyoudou"])
+            if not ok:
+                raise ValueError("要約する頭を起こせません：" + why)
+            result = conversation_context.compact(chats, cid, summarizer=conversation_context.summarize, stop=tomeru)
+            CTX["会話"] = [{"役": t["役"], "文": t["文"]} for t in chats.load(cid)["やりとり"]]
+        return result
+    command = conversation_loop.parse(text)
+    if command:
+        if command.get("stop"):
+            _stop_loop(cid)
+            return "この会話の反復を止めました。"
+        _LOOPS.start(cid, command["topic"], command["interval"])
+        return "反復を開始しました（最大20周・0〜7時は休止）。画面の停止ボタンか /loop 止める で止まります。"
+    return None
+
+
+def _cancel_loop_approval(cid):
+    obj = chats.get_state(cid).get("approval") or {}
+    ident = (obj.get("承認") or {}).get("id")
+    if ident:
+        import shounin
+        shounin.kotaeru(ident, "やめる")
+        chats.update_state(cid, approval=None)
+
+
+def _stop_loop(cid):
+    _LOOPS.stop(cid)
+    _cancel_loop_approval(cid)
+
+
+def _run_request(text, cid, q, tomeru, michi, rireki):
+    result = _special_request(text, cid, tomeru)
+    if result is not None:
+        return {"出力": result, "経過": "", "ミリ秒": 0, "種類": "コマンド", "モード": CTX["設定"]["モード"]}
+    # 10/4: 履歴を全部渡すようにしたので、Claude Code のように 75% を超えたら先に畳む（CPU の読み込みを短く保つ）
     try:
-        conversation = chats.load(cid)
-    except Exception:
-        return []
-    if not conversation:
-        return []
-    turns = conversation.get("やりとり") or []
-    pairs = []
-    cursor = len(turns) - 1
-    while cursor > 0 and len(pairs) < 3:
-        previous, current = turns[cursor - 1], turns[cursor]
-        if previous.get("役") == "user" and current.get("役") in {"bot", "assistant"}:
-            pairs.append((previous, current))
-            cursor -= 2
-        else:
-            cursor -= 1
-    pairs.reverse()
-    result = []
-    for user_turn, assistant_turn in pairs:
-        result.append({"role": "user", "text": str(user_turn.get("文") or "")})
-        result.append({"role": "assistant", "text": str(assistant_turn.get("文") or "")})
-    while sum(len(turn["text"]) for turn in result) > 1500 and result:
-        excess = sum(len(turn["text"]) for turn in result) - 1500
-        if len(result[0]["text"]) > excess:
-            result[0]["text"] = result[0]["text"][excess:]
-        else:
-            result.pop(0)
-    return result
+        c = chats.load(cid) if cid else None
+        if c and _CONTEXT_METER.measure(c, CTX["設定"]).get("割合", 0) >= 75:
+            q.put({"操作イベント": {"type": "note", "text": "コンテキストが75%を超えたので、古いやりとりを要約して畳みます"}})
+            _special_request("/compact", cid, tomeru)
+            rireki = _kyoudou_history(cid)[:-1]   # 最後は今の頼み（受け口で足し済み）
+    except Exception as error:
+        print("自動の圧縮を飛ばした:", error, file=sys.stderr)
+    previous = getattr(_REQUEST_CONVERSATION, "cid", None)
+    _REQUEST_CONVERSATION.cid = cid
+    try:
+        return handle_text_nagashi(text, q, tomeru, michi, rireki=rireki)
+    finally:
+        _REQUEST_CONVERSATION.cid = previous
 
 
-def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
+def _loop_runner(cid, prompt, stop):
+    import queue
+    q = queue.Queue()
+    if not chats.load(cid):
+        raise ValueError("会話がありません")
+    # 夜をまたいだ実行も止める（道具の手の間と生成のかたまりで見る）。
+    watcher_done = threading.Event()
+    def night_watch():
+        while not watcher_done.wait(1):
+            if time.localtime().tm_hour < 7:
+                stop.set()
+                return
+    watcher = threading.Thread(target=night_watch, name="loop-night-watch", daemon=True)
+    watcher.start()
+    try:
+        history = _kyoudou_history(cid)
+        loop_state = chats.get_state(cid).get("loop", {})
+        chats.add_turn(cid, "user", f"【反復 {loop_state.get('round', 0)}周目】" + loop_state.get("topic", ""))
+        result = handle_text_nagashi(prompt, q, stop, "kyoudou", rireki=history, cid=cid, force_jiyuu=True)
+    finally:
+        watcher_done.set()
+        watcher.join(timeout=2)
+    events = []
+    while not q.empty():
+        event = q.get_nowait().get("操作イベント")
+        if event:
+            events.append(event)
+    text = result["出力"]
+    chats.add_turn(cid, "bot", "【反復の結果】\n" + text, result.get("経過", ""), result.get("ミリ秒", 0))
+    ended = [e for e in events if e.get("type") == "tool_end"]
+    verified = bool(ended) and any(e.get("ok") for e in ended) and not any(e.get("ok") is False for e in ended)
+    return {"ok": verified and not result.get("止めた") and "終わりまでできませんでした" not in text,
+            "method": [{"道具": next((e.get("label") or e.get("name", "") for e in events if e.get("id") == end.get("id") and e.get("type") == "tool_start"), "操作"),
+                        "結果": end.get("summary", "完了")} for end in ended if end.get("ok")][:10],
+            "result": text, "next": text.split("次に試すこと", 1)[-1][-2000:] if "次に試すこと" in text else "前周の結果・失敗を踏まえて方法を変える"}
+
+
+def _loop_lesson(cid, topic, record):
+    import importlib
+    for directory in (os.path.join(os.path.dirname(HERE), "dougu"), os.path.join(os.path.dirname(HERE), "koukai", "dougu")):
+        if os.path.isdir(directory) and directory not in sys.path:
+            sys.path.append(directory)
+    kyoukun = importlib.import_module("kyoukun")
+    path = Path(os.environ.get("KERNEL_KYOUKUN_PATH", str(kyoukun.DEFAULT_PATH)))
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        old = []
+    verified = "・".join(str(m["道具"]) + "：" + str(m["結果"]) for m in record.get("method", []))
+    card = {"知らせ": kyoukun._generalize(verified or record["result"], 240), "道具": "loop", "頼み": kyoukun._generalize(topic, 120),
+            "数": 1, "頼みたち": [kyoukun._generalize(topic, 120)]}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".loop.tmp")
+    temporary.write_text(json.dumps(kyoukun._combine(old, [card]), ensure_ascii=False), encoding="utf-8")
+    os.replace(temporary, path)
+    chats.add_activity(cid, {"type": "loop", "text": "確認できた方法を教訓カードに保存しました"})
+
+
+_LOOPS = conversation_loop.Manager(chats, _loop_runner, lesson=_loop_lesson)
+
+
+def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None, cid=None, force_jiyuu=False):
     """handle_text と同じ道筋を、途中経過と文字を q に流しながら通る。
     ★ 画面の「止める」= tomeru。teachers は次のかたまりで接続を切る。"""
+    cid = cid or getattr(_REQUEST_CONVERSATION, "cid", None)
     import teachers as _T
     with _LOCK, _gakushuu_busy(), _temoto_tsukau():
+        if tomeru.is_set():
+            return {"出力": "（ここで止めた）", "経過": "", "ミリ秒": 0, "止めた": True}
         t0 = time.time()
         cfg = CTX["設定"]
         keep = cfg.get("考える様子")
@@ -865,7 +975,11 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
         _T.mado_settei(on_token=on_token, tomeru=tomeru)
         # ★ 承認: 道具が「押す・打つ」の前に聞いてくる → 画面に {"承認": …} を流し、/approve を待つ（shounin.py）
         import shounin as _shounin
-        _shounin.TOIKAKE = lambda obj: q.put(obj)
+        def approval(obj):
+            q.put(obj)
+            if cid and force_jiyuu:
+                chats.update_state(cid, approval=obj)
+        _shounin.TOIKAKE = approval
         try:
             with contextlib.redirect_stdout(w):
                 try:
@@ -876,7 +990,7 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                         moderu_name = MODERU[moderu_key]["名"]
                         import importlib
                         _jiyuu = None
-                        if cfg.get("輪") == "新":
+                        if cfg.get("輪") == "新" or cid or force_jiyuu:
                             # 写しでは dougu/、本番では kernel/ または koukai/dougu/ に置ける。
                             for p in (os.path.join(os.path.dirname(HERE), "dougu"),
                                       os.path.join(os.path.dirname(HERE), "koukai", "dougu")):
@@ -889,8 +1003,10 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                             except Exception as e:
                                 print(f"  新しい輪を読み込めません：{type(e).__name__}: {e}。旧に戻します")
                                 _jiyuu = None
+                        if (cid or force_jiyuu) and _jiyuu is None:
+                            raise RuntimeError("会話の書き込み範囲を守る輪が読み込めません。操作は行いません")
                         import kyoudou as _kyoudou
-                        if (_jiyuu is not None and _kyoudou.is_shortcut(text, rireki=rireki)
+                        if (_jiyuu is not None and not force_jiyuu and _kyoudou.is_shortcut(text, rireki=rireki)
                                 and getattr(_jiyuu, "chikamichi_ok", lambda t: True)(text)):
                             # 9/28: 時刻・電池・外付けなど一瞬で答えられる問いは、30B を起こさず近道で答える（速さはカーネル）。
                             _kyoudou.TOMERU = tomeru
@@ -911,23 +1027,14 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
                                 try:
                                     mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
                                             else cfg.get("許可モード", "自動"))
-                                    settei = {**cfg, "輪の選び方": MODERU[moderu_key].get("輪の選び方", {})}
+                                    settei = {**cfg, **_conversation_options(cid), "反復": force_jiyuu, "輪の選び方": MODERU[moderu_key].get("輪の選び方", {})}
                                     args = {"rireki": rireki, "mode": mode, "settei": settei}
                                     def on_event(ev):
                                         if isinstance(ev, dict) and ev.get("type") in ("tool_start", "tool_end", "note"):
+                                            if cid:
+                                                chats.add_activity(cid, ev)
                                             q.put({"操作イベント": ev})
-                                    try:
-                                        kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
-                                    except TypeError as e:
-                                        if "settei" not in str(e) and "on_event" not in str(e):
-                                            raise
-                                        args.pop("settei", None)
-                                        try:
-                                            kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
-                                        except TypeError as e2:
-                                            if "on_event" not in str(e2):
-                                                raise
-                                            kotae = _jiyuu.kotaeru(text, **args)
+                                    kotae = _jiyuu.kotaeru(text, on_event=on_event, **args)
                                 finally:
                                     _kyoudou.TOMERU = None
                                 print("答え：" + kotae)
@@ -967,6 +1074,8 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None):
         finally:
             _T.mado_settei(None, None)
             _shounin.TOIKAKE = None
+            if cid:
+                chats.update_state(cid, approval=None)
             cfg["考える様子"] = keep
         ans, trace = _split_answer(w.getvalue())
         if tomeru.is_set():
@@ -1070,9 +1179,7 @@ def state():
         "部品": len(kernel.PARTS),
         "裏の係": bg,
         "会話数": used // 2,
-        "いれもの": {"使った": used, "上限": limit,
-                     "割合": round(min(1.0, used / limit) * 100) if limit else 0,
-                     "文字数": chars},
+        "いれもの": _conversation_view(CTX.get("会話id"))["いれもの"],
         "設定": {k: cfg.get(k) for k in S.DEFAULTS},
         "設定の説明": dict(S._HELP),
         "じっくり": bool(cfg.get("じっくり")),
@@ -1247,7 +1354,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 n = int(query.get("n", ["200"])[0])
             except ValueError:
                 return self._json({"error": "n は整数にしてください"}, 400)
-            return self._json({"動き": _ugoki(n)})
+            cid = query.get("cid", [None])[0]
+            return self._json({"動き": chats.activities(cid, n) if cid and chats.load(cid) else []})
+        if path == "/chat/context":
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            cid = query.get("cid", [None])[0]
+            return self._json(_conversation_view(cid))
         if path in ("/skills", "/gakushuu", "/gakushuu/teian"):
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
@@ -1289,7 +1403,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/commands":
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
-            return self._json([{"名": c, "説明": d} for c, d in S.COMMANDS])
+            return self._json([{"名": c, "説明": d} for c, d in [*S.COMMANDS, ("/compact", "古い会話を要約（/圧縮も可）"), ("/圧縮", "古い会話を要約"), ("/loop", "反復開始：/loop 30m お題、停止：/loop 止める")]])
         if path == "/transcript":
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
@@ -1365,6 +1479,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             paths = [x.strip() for x in out.split(", ")] if out else []
             return self._json({"道": paths})
 
+        if path in {"/chat/folders", "/chat/activity/clear", "/chat/loop/stop"}:
+            cid = body.get("id")
+            if not cid or not chats.load(cid):
+                return self._json({"error": "その会話はありません"}, 404)
+            try:
+                if path == "/chat/folders":
+                    with _LOOPS.lock:
+                        if cid in _LOOPS.active or chats.get_state(cid).get("loop", {}).get("running"):
+                            raise ValueError("反復を止めてからフォルダを変更してください")
+                        import importlib
+                        for directory in (os.path.join(os.path.dirname(HERE), "dougu"), os.path.join(os.path.dirname(HERE), "koukai", "dougu")):
+                            if os.path.isdir(directory) and directory not in sys.path:
+                                sys.path.append(directory)
+                        hako_path = next((Path(directory) / "hako.py" for directory in (
+                            os.path.join(os.path.dirname(HERE), "dougu"), os.path.join(os.path.dirname(HERE), "koukai", "dougu"))
+                            if (Path(directory) / "hako.py").is_file()), Path(HERE) / "hako.py")
+                        spec = importlib.util.spec_from_file_location("conversation_hako", hako_path)
+                        hako = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(hako)
+                        folders = hako.normalize_folders(body.get("folders"))
+                        chats.update_state(cid, folders=folders)
+                        return self._json({"ok": True, "触ってよいフォルダ": folders})
+                if path == "/chat/activity/clear":
+                    chats.clear_activity(cid)
+                else:
+                    _stop_loop(cid)
+                return self._json({"ok": True})
+            except ValueError as error:
+                return self._json({"error": str(error)}, 400)
+
         if path == "/approve":
             # 画面の「する／全部／やめる」を道具に返す
             import shounin as _shounin
@@ -1383,23 +1527,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     cid = chats.create()["id"]
                 CTX["会話id"] = cid
                 rireki = _kyoudou_history(cid)
-                chats.add_turn(cid, "user", text)
+                if text not in {"/compact", "/圧縮"}:
+                    chats.add_turn(cid, "user", text)
             except Exception:
                 cid = None
                 rireki = []
             q = _queue.Queue()
             tomeru = threading.Event()
+            q.put({"会話": cid})
             def worker():
                 try:
-                    res = handle_text_nagashi(
-                        text, q, tomeru, body.get("michi"), rireki=rireki
-                    )
+                    res = _run_request(text, cid, q, tomeru, body.get("michi"), rireki)
                 except Exception as e:
                     res = {"出力": f"エラー： {type(e).__name__}: {e}", "経過": "", "ミリ秒": 0,
                            "モード": CTX["設定"].get("モード", ""), "止めた": tomeru.is_set()}
                 res["会話"] = cid
                 try:
-                    if cid:
+                    if cid and text not in {"/compact", "/圧縮"}:
                         chats.add_turn(cid, "bot", res["出力"], res.get("経過", ""), res.get("ミリ秒", 0))
                         _queue_title(cid)
                 except Exception:
@@ -1453,20 +1597,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             text = (body.get("text") or "").strip()
             if not text:
                 return self._json({"error": "からっぽです"}, 400)
-            res = handle_text(text)
-            # 会話に残す（分けて持っているほうへ）
             cid = body.get("会話") or CTX.get("会話id")
-            try:
-                if not cid or not chats.load(cid):
-                    cid = chats.create()["id"]
-                CTX["会話id"] = cid
+            if not cid or not chats.load(cid):
+                cid = chats.create()["id"]
+            CTX["会話id"] = cid
+            if text not in {"/compact", "/圧縮"}:
                 chats.add_turn(cid, "user", text)
-                chats.add_turn(cid, "bot", res["出力"], res.get("経過", ""),
-                               res.get("ミリ秒", 0))
+            try:
+                import queue
+                res = _run_request(text, cid, queue.Queue(), threading.Event(), body.get("michi"), _kyoudou_history(cid)[:-1])
+            except Exception as error:
+                res = {"出力": "エラー：" + str(error), "経過": "", "ミリ秒": 0}
+            if text not in {"/compact", "/圧縮"}:
+                chats.add_turn(cid, "bot", res["出力"], res.get("経過", ""), res.get("ミリ秒", 0))
                 _queue_title(cid)
-                res["会話"] = cid
-            except Exception:
-                pass
+            res["会話"] = cid
             return self._json(res)
 
         # ---- 組（会話のまとまり）----
@@ -1945,6 +2090,7 @@ def serve():
     boot()
     # 127.0.0.1 のみ。外のネットワークからは見えない
     httpd = Server(("127.0.0.1", PORT), Handler)
+    _LOOPS.serve()
     port = httpd.server_address[1]
     url = f"http://127.0.0.1:{port}/?t={TOKEN}"
     print(url, flush=True)
@@ -1963,6 +2109,9 @@ def serve():
     try:
         httpd.serve_forever()
     finally:
+        for cid in list(_LOOPS.active):
+            _cancel_loop_approval(cid)
+        _LOOPS.close()
         httpd.server_close()
         _gakushuu_process(False)
         _temoto_shimau()

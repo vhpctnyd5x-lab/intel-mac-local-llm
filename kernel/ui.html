@@ -472,6 +472,8 @@ textarea::placeholder{color:var(--faint)}
 ::-webkit-scrollbar{width:9px;height:9px}
 ::-webkit-scrollbar-thumb{background:#3a3a37;border-radius:9px}
 ::-webkit-scrollbar-track{background:transparent}
+/* 10/4 本人: コンテキストの量は Claude Code のように常に見せる */
+#ctxmeter2,#ctxmeter2.visible{display:flex!important;align-items:center;gap:5px;font-size:11px;white-space:nowrap}
 </style>
 <style>
 :root{
@@ -668,6 +670,13 @@ body.side-collapsed aside{width:0;min-width:0;flex-basis:0;border:0}body.side-co
 @media(max-width:720px){#workview{padding:17px 14px 25px}.work-card{padding:15px}.work-grid{grid-template-columns:1fr}.tabs .tab{font-size:11px}body.sidebar-open aside{z-index:60}}
 @media(max-width:390px){.work-head h1{font-size:19px}.skill-list{grid-template-columns:1fr}}
 body.view-skills #term,body.view-gakushuu #term,body.view-skills #term-toggle,body.view-gakushuu #term-toggle{display:none!important}
+/* 会話の状態は、狭い画面でも常に見える。 */
+#ctxmeter2,#ctxmeter2.visible{display:flex!important;order:3;font-size:10px;white-space:normal}
+#ctxmeter2 .track{display:none}
+.conversation-controls{display:flex;align-items:center;gap:8px;padding:3px 2px 7px;font-size:11px;flex-wrap:wrap}
+.conversation-controls button{font-size:11px;border:1px solid var(--line);border-radius:6px;padding:4px 7px;background:transparent;color:inherit}
+#workspace-btn{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#loop-stop[hidden],#term-toggle[hidden]{display:none!important}
 </style>
 </head>
 <body>
@@ -767,6 +776,10 @@ body.view-skills #term,body.view-gakushuu #term,body.view-skills #term-toggle,bo
   <div class="composer" style="position:relative">
     <div class="palette" id="palette"></div>
     <div class="sugoshi" id="atesaki-chuui" hidden></div>
+    <div class="conversation-controls">
+      <button id="workspace-btn" type="button">触ってよいフォルダ: ホーム</button>
+      <span id="loop-status"></span><button id="loop-stop" type="button" hidden>反復を止める</button>
+    </div>
     <div class="box">
       <textarea id="in" rows="1" placeholder="何でも頼んでください" autofocus></textarea>
       <div class="composer-hint">/ でコマンド　・　改行は Shift+Enter</div>
@@ -913,7 +926,7 @@ let ARCH = false;                // しまったものも見るか
 let TRASH = false;               // SQLite のゴミ箱を見るか
 let SEL = false;                 // えらんでまとめて（整理）モードか
 let ERANDA = new Set();          // 整理モードでえらんだ会話の id
-let CHAT_SIG = "";
+let CHAT_SIG = "", CHAT_VIEW_VERSION = 0;
 let LAST = {入力:"", 出力:"", 経過:""};   // 直前のやりとり（気づいたことに添える）
 
 function closeSheet(){ veil.classList.remove("on"); sheet.innerHTML=""; }
@@ -1030,10 +1043,7 @@ function setView(view){
   VIEW = view;
   document.body.classList.toggle("view-skills",view === "skills");
   document.body.classList.toggle("view-gakushuu",view === "gakushuu");
-  if(view === "kernel"){   // 10/3 本人: チャットに戻ったら右上の流れの欄を必ず出す
-    document.body.classList.remove("no-term");
-    document.getElementById("term-toggle").hidden = false;
-  }
+  if(view === "kernel") syncConversationControls();
   document.querySelectorAll(".tabs .tab").forEach(b=>{
     const on = b.dataset.view === (view === "gakushuu" ? "gakushuu" : "kernel");
     b.classList.toggle("on",on);
@@ -1351,9 +1361,13 @@ async function openChat(id){
     if(id!==ST.いま)shiraseru("いまの頼みが終わってから開けます（止めるなら ■ か Esc）");
     return;
   }
+  CHAT_VIEW_VERSION++;
   const r = await api("/chat/open", {method:"POST", body:JSON.stringify({id})});
   if (r.error) return;
+  ST.いま = id;
+  renderConversation(r.会話, true);
   log.innerHTML = "";
+  if(r.会話.要約){const n=addBot();n.querySelector(".dots")?.remove();fillBot(n,{出力:"これまでの会話の要約\n"+r.会話.要約,ミリ秒:0});}
   (r.会話.やりとり || []).forEach(t => {
     if (t.役 === "user") addUser(t.文);
     else { const n = addBot(); n.querySelector(".dots")?.remove();
@@ -1427,8 +1441,10 @@ function chatMenu(id){
 }
 
 document.getElementById("c-new").onclick = async () => {
+  CHAT_VIEW_VERSION++;
   await api("/chat/new",{method:"POST",body:JSON.stringify({画面だけ:true})});
   setView("kernel");
+  ST.いま = null; renderConversation(null, true);
   showHome(); refresh();
 };
 /* ================================================================
@@ -2115,33 +2131,75 @@ function termPaint(text){
     .replace(/^(\s*─+)$/gm,         '<span class="dim">$1</span>');
 }
 
-function termAdd(text, res){
-  document.querySelector("#termbody .none")?.remove();
-  const t = new Date();
-  const hh = String(t.getHours()).padStart(2,"0");
-  const mm = String(t.getMinutes()).padStart(2,"0");
-  const ss = String(t.getSeconds()).padStart(2,"0");
-  const head = document.createElement("div");
-  head.className = "cmd";
-  head.innerHTML = `<span class="stamp">${hh}:${mm}:${ss}</span> $ <b>${esc(text)}</b>`;
-  termbody.appendChild(head);
-  const blk = document.createElement("div");
-  blk.className = "blk";
-  const body = (res.経過 || res.出力 || "").trim();
-  blk.innerHTML = termPaint(body || "（何も出ませんでした）")
-    + `\n<span class="stamp">→ ${res.ミリ秒 ?? 0} ミリ秒 ・ ${res.種類 || "—"}</span>`;
-  termbody.appendChild(blk);
-  termbody.scrollTop = termbody.scrollHeight;
+document.body.classList.add("no-term");
+let TERM_CID = null, TERM_SIG = "", TERM_EVENTS = [], FOLDERS = [], LOOP_APPROVAL = "";
+
+function activityText(e){
+  if(e.type === "kotae")return `$ ${e.頼み || ""}\n${e.text || ""}\n→ ${e.ミリ秒 ?? 0} ミリ秒`;
+  if(e.type === "tool_start")return `${e.label || e.name || "操作"}${e.risk ? "（"+e.risk+"）" : ""}`;
+  if(e.type === "tool_end")return `${e.ok ? "完了" : "失敗"}: ${e.summary || ""}`;
+  return String(e.text || e.文 || "") + (e.result ? "\n結果・失敗: " + e.result : "") + (e.next ? "\n次に試すこと: " + e.next : "");
 }
 
-document.getElementById("term-clear").onclick = () => {
-  termbody.innerHTML = '<span class="none">ここに、どんな指示でどう動いたかが出ます。</span>';
+function syncConversationControls(){
+  document.getElementById("term-toggle").hidden = !TERM_EVENTS.length;
+  if(!TERM_EVENTS.length)document.body.classList.add("no-term");
+}
+
+function renderConversation(c, opening=false){
+  const cid = c?.id ?? ST.いま ?? null;
+  const events = c?.動き || [];
+  const changedChat = cid !== TERM_CID;
+  const firstActivity = !TERM_EVENTS.length && events.length;
+  TERM_CID = cid;
+  TERM_EVENTS = events.slice(-200);
+  const sig = JSON.stringify(TERM_EVENTS);
+  if(changedChat || sig !== TERM_SIG){
+    TERM_SIG = sig;
+    termbody.innerHTML = TERM_EVENTS.length ? TERM_EVENTS.map(e => {
+      const stamp = new Date((e.時刻 || Date.now()/1000)*1000).toLocaleTimeString();
+      return `<div class="cmd"><span class="stamp">${esc(stamp)}</span></div><div class="blk">${esc(activityText(e))}</div>`;
+    }).join("") : '<span class="none">この会話では、まだ道具を使っていません。</span>';
+    termbody.scrollTop = termbody.scrollHeight;
+  }
+  if(changedChat || opening || firstActivity)document.body.classList.toggle("no-term", !events.length);
+  syncConversationControls();
+  FOLDERS = c?.触ってよいフォルダ || [];
+  const button = document.getElementById("workspace-btn");
+  button.textContent = "触ってよいフォルダ: " + (FOLDERS.length ? FOLDERS.map(p => p.split("/").filter(Boolean).pop() || "/").join("・") : "ホーム");
+  button.title = FOLDERS.join("\n") || "ホーム（保護された場所は除く）";
+  const loop = c?.loop || {};
+  document.getElementById("loop-stop").hidden = !loop.running;
+  document.getElementById("loop-status").textContent = loop.running ? `反復 ${loop.round || 0}/${loop.maximum || 20}周・${new Date((loop.next || 0)*1000).toLocaleTimeString()} に次の周` : "";
+}
+
+function termAdd(){ /* 道具の動きはサーバーの会話別記録から読む。返答だけでは欄を出さない。 */ }
+document.getElementById("term-clear").onclick = async () => {
+  if(ST.いま)await api("/chat/activity/clear", {method:"POST",body:JSON.stringify({id:ST.いま})});
+  TERM_EVENTS=[];TERM_SIG="";await refresh();
 };
-const toggleTerm = () => {
-  document.body.classList.toggle("no-term");
-};
+const toggleTerm = () => document.body.classList.toggle("no-term");
 document.getElementById("term-hide").onclick = toggleTerm;
 document.getElementById("term-toggle").onclick = toggleTerm;
+document.getElementById("loop-stop").onclick = async () => {
+  await api("/chat/loop/stop",{method:"POST",body:JSON.stringify({id:ST.いま})});
+  await refresh();
+};
+document.getElementById("workspace-btn").onclick = () => {
+  if(busy)return shiraseru("いまの頼みが終わってから変更できます。");
+  openSheet(`<h3>触ってよいフォルダ</h3><div class="bd"><p>1行に1つ。複数選べます。保護された場所は常に除きます。</p><textarea id="workspace-paths" rows="5" style="width:100%">${esc(FOLDERS.join("\n") || "~")}</textarea></div><div class="ft"><button class="btn" id="workspace-pick">フォルダを選ぶ</button><span class="sp"></span><button class="btn" data-close>やめる</button><button class="btn go" id="workspace-save">保存</button></div>`);
+  sheet.querySelector("#workspace-pick").onclick = async () => {
+    const r=await api("/pick",{method:"POST",body:JSON.stringify({何:"folder"})});
+    if(r.道?.length){const area=sheet.querySelector("#workspace-paths");area.value=(area.value.trim()+"\n"+r.道.join("\n")).trim();}
+  };
+  sheet.querySelector("#workspace-save").onclick = async () => {
+    const folders=sheet.querySelector("#workspace-paths").value.split("\n").map(p=>p.trim()).filter(Boolean);
+    if(!ST.いま){const r=await api("/chat/new",{method:"POST",body:"{}"});ST.いま=r.会話;}
+    const r=await api("/chat/folders",{method:"POST",body:JSON.stringify({id:ST.いま,folders})});
+    if(r.error)return shiraseru(r.error);
+    closeSheet();await refresh();
+  };
+};
 
 function fillBot(node, res){
   const body = (res.出力 || "（何も返ってきませんでした）").trim();
@@ -2161,7 +2219,8 @@ function fillBot(node, res){
 
 function showToolEvent(node, ev){
   if (!ev || !["tool_start","tool_end","note"].includes(ev.type)) return;
-  document.getElementById("term-toggle").hidden = false;
+  TERM_EVENTS.push({...ev,時刻:Date.now()/1000});
+  renderConversation({id:ST.いま,動き:TERM_EVENTS,触ってよいフォルダ:FOLDERS});
   let details = node.querySelector(".tool-summary");
   if (!details){
     details = document.createElement("details"); details.className = "tool-summary";
@@ -2228,6 +2287,7 @@ async function send(text){
   ta.value = ""; resize(); hidePalette();
   addUser(text);
   const node = addBot();
+  let compactDone = false;
   try{
     if (DEMO){
       fillBot(node,{出力:"見本モードです。画面の動きを確認できます。",ミリ秒:0,モード:"見本"});
@@ -2246,7 +2306,8 @@ async function send(text){
     const kyoudou = ["kyoudou:", "kyoudou:30b", "kyoudou:mimo9", "kyoudou:q36"].includes(m);   // 協働は /ask/stream に michi を付けて流す
     atesaki.classList.toggle("temoto", computer || agent || m.startsWith("local:"));
     atesaki.classList.toggle("soto", m !== "" && !kyoudou && !computer && !agent && !m.startsWith("local:"));
-    const res = computer
+    const special = /^\/(compact|圧縮|loop)(?:\s|$)/.test(text);
+    const res = special ? await askNagashi(text, node) : computer
       ? await api("/computer/plan", {method:"POST", body: JSON.stringify({text, model:computerModel})})
       : agent
       ? await api("/agent", {method:"POST", body: JSON.stringify({text, model:agentModel})})
@@ -2258,6 +2319,7 @@ async function send(text){
     const r = res.error && m && !jika && !kyoudou && !computer && !agent
       ? {出力:`NVIDIA の ${MODEL_INFO[m]?.name || m} が答えませんでした（混雑か提供終了）。別のモデルを選んでください`, ミリ秒:0}
       : res.error ? {出力:"エラー： "+res.error, ミリ秒:0, モード:"—"} : res;
+    compactDone = ["/compact","/圧縮"].includes(text) && r.種類 === "コマンド";
     fillBot(node, r);
     if (computer && !res.error) addComputerApproval(node, res);
     termAdd(text, r);
@@ -2269,7 +2331,8 @@ async function send(text){
     termAdd(text, r);
   }
   busy = false; sendBtn.disabled = false; ta.focus();
-  refresh();
+  if(compactDone && ST.いま)await openChat(ST.いま);
+  else refresh();
 }
 
 /* ---------- 流しながら受ける（/ask/stream）＋ 止める ---------- */
@@ -2294,7 +2357,7 @@ async function askNagashi(text, node, michi){
       while ((i = buf.indexOf("\n")) >= 0){
         const ln = buf.slice(0, i).trim(); buf = buf.slice(i+1); if (!ln) continue;
         let m; try{ m = JSON.parse(ln); }catch(e){ continue; }
-        if (m.会話) kaiwa = m.会話;
+        if (m.会話){ kaiwa = m.会話; if(ST.いま !== m.会話)CHAT_VIEW_VERSION++; ST.いま = m.会話; }
         if (m.経過 !== undefined){ keika.innerHTML = `<b>${esc(m.経過.trim().slice(0,90))}</b>`; }
         if (m.考え !== undefined){ kangae = m.考え; keika.innerHTML = `<b>考えています … ${kangae} 字</b>`; }
         if (m.文字 !== undefined){
@@ -2443,8 +2506,10 @@ document.addEventListener("click", e => {
 
 /* ---------- 状態 ---------- */
 async function refresh(){
+  const version = CHAT_VIEW_VERSION;
   try{
     const s = await api("/state");
+    if(version !== CHAT_VIEW_VERSION)return;
     ST = s;
     const kyoka = s.設定?.["許可モード"] || "自動";
     document.querySelectorAll("[data-kyoka]").forEach(b =>
@@ -2523,7 +2588,14 @@ async function refresh(){
     updateModelLabel();
 
     // ものおぼえの入れもの
-    const c = s.いれもの || {割合:0, 使った:0, 上限:0};
+    const current = ST.いま;
+    const view = DEMO ? {} : await api("/chat/context" + (current ? "?cid="+encodeURIComponent(current) : ""));
+    if(current !== ST.いま || version !== CHAT_VIEW_VERSION)return;
+    renderConversation({id:current,...view});
+    if(view.承認?.承認 && view.承認.承認.id !== LOOP_APPROVAL){
+      LOOP_APPROVAL=view.承認.承認.id;shouninSheet(view.承認.承認,addBot());
+    }
+    const c = view.いれもの || {割合:0, 使った:0, 上限:32768};
     const nokori = Math.max(0, 100 - (c.割合 || 0));
     const setmeter = (mid, fid, tid, txt) => {
       const m = document.getElementById(mid);
@@ -2532,16 +2604,16 @@ async function refresh(){
       m.className = "meter" + (c.割合 >= 85 ? " hot" : c.割合 >= 60 ? " mid" : "");
       document.getElementById(tid).textContent = txt;
       m.title = `ものおぼえの入れもの: 残り ${nokori}%`
-              + `（${c.使った}/${c.上限} 往復・${(c.文字数||0).toLocaleString()} 文字）`;
+              + `（${c.推定 ? "推定・" : ""}${(c.文字数||0).toLocaleString()} 文字）`;
     };
-    setmeter("ctxmeter",  "ctxfill",  "ctxtxt",  `${c.使った}/${c.上限}`);
-    setmeter("ctxmeter2", "ctxfill2", "ctxtxt2", `残り ${nokori}%`);
-    document.getElementById("ctxmeter").classList.toggle("visible", (c.割合 || 0) > 70);
-    document.getElementById("ctxmeter2").classList.toggle("visible", (c.割合 || 0) > 70);
+    const number=n=>n>=10000 ? (n/10000).toFixed(1)+"万" : (n||0).toLocaleString();
+    const meterText=`${number(c.使った)} / ${number(c.上限)} トークン ${c.割合||0}%${c.推定 ? "（推定）" : ""}`;
+    setmeter("ctxmeter", "ctxfill", "ctxtxt", meterText);
+    setmeter("ctxmeter2", "ctxfill2", "ctxtxt2", meterText);
 
     // 左のボタンは絞ったので、札は「有れば書く」だけにする
   const bg = s.裏の係 || {};
-    document.getElementById("term-toggle").hidden = false;   // 10/3: 会話が無くても隠さない（数秒ごとに隠していた）
+    syncConversationControls();
     const fuda = (id, v) => { const e = document.getElementById(id);
                               if (e) e.textContent = v; };
     fuda("b-bg", bg.動作中 ? (bg.調べた||0).toLocaleString() : "停止");
@@ -2858,9 +2930,7 @@ async function startUI(){
   try{savedTheme=localStorage.getItem("kernel-theme")||"system";savedSize=localStorage.getItem("kernel-font-size")||"15";}catch(e){}
   setTheme(VIEW_QUERY.get("theme") || savedTheme,!VIEW_QUERY.has("theme"));
   setFontSize(savedSize);
-  document.body.classList.remove("no-term");
-  document.getElementById("term-toggle").hidden = false;
-  await refresh();
+  await refresh();   // 10/4 本人: うごき欄は会話ごと。新しい会話では出さない（renderConversation が決める）
   if(DEMO){
     COMMANDS=demoAPI("/commands");
     if(VIEW_QUERY.get("open")==="home" || VIEW_QUERY.get("demo")==="empty")showHome();else renderDemo();

@@ -106,6 +106,16 @@ def _create_schema(conn):
             UNIQUE(conversation_id, position)
         );
 
+        CREATE TABLE IF NOT EXISTS conversation_state (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+            data TEXT NOT NULL DEFAULT '{}'
+        );
+        CREATE TABLE IF NOT EXISTS activity (
+            id INTEGER PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            event TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS activity_conversation ON activity(conversation_id, id);
         CREATE INDEX IF NOT EXISTS conversations_visible_updated
             ON conversations(deleted_at, archived, updated DESC);
         CREATE INDEX IF NOT EXISTS turns_conversation_position
@@ -249,6 +259,10 @@ def _load(conn, cid, include_deleted=False):
         "しまった": bool(row["archived"]),
         "組": row["group_name"],
         "削除日時": row["deleted_at"],
+        "動き": _activity(conn, cid),
+        "触ってよいフォルダ": _state(conn, cid).get("folders", [os.path.expanduser("~")]),
+        "要約": _state(conn, cid).get("summary", ""),
+        "loop": _state(conn, cid).get("loop", {}),
         "やりとり": [
             {"役": turn["role"], "文": turn["text"], "経過": turn["trace"],
              "ミリ秒": turn["ms"], "時刻": turn["created"]}
@@ -357,6 +371,15 @@ def add_turn(cid, role, text, trace="", ms=0):
             (cid, position, str(role), str(text), str(trace), _int(ms), now),
         )
         conn.execute("UPDATE conversations SET updated = ? WHERE id = ?", (now, cid))
+        if str(role) in ("bot", "assistant"):
+            # 10/4 本人: 過去の会話を開いたら、その会話の動きを見たい。近道の答え（道具なし）も1件として残す。
+            ask = conn.execute("SELECT text FROM turns WHERE conversation_id = ? AND position < ? AND role = 'user' "
+                               "ORDER BY position DESC LIMIT 1", (cid, position)).fetchone()
+            body = (str(trace).strip() or str(text).strip())[:1200]
+            event = {"type": "kotae", "頼み": (ask[0] if ask else "")[:300], "text": body, "ミリ秒": _int(ms), "時刻": now}
+            conn.execute("INSERT INTO activity(conversation_id,event) VALUES (?,?)", (cid, json.dumps(event, ensure_ascii=False)))
+            conn.execute("DELETE FROM activity WHERE conversation_id=? AND id NOT IN (SELECT id FROM activity WHERE conversation_id=? ORDER BY id DESC LIMIT ?)",
+                         (cid, cid, ACTIVITY_LIMIT))
         return _load(conn, cid)
 
 
@@ -483,6 +506,10 @@ def fork(cid, upto=None):
     duplicate = create((source.get("題", "会話") + " の枝")[:60])
     with _db() as conn:
         _replace_turns(conn, duplicate["id"], turns)
+        source_state = _state(conn, source["id"])
+        branch_state = {key: source_state[key] for key in ("summary", "folders") if key in source_state}
+        conn.execute("INSERT INTO conversation_state VALUES (?, ?)",
+                     (duplicate["id"], json.dumps(branch_state, ensure_ascii=False)))
         conn.execute(
             "UPDATE conversations SET updated = ? WHERE id = ?", (_now(), duplicate["id"])
         )
@@ -896,6 +923,8 @@ def transcript(cid):
         time.strftime("%Y-%m-%d %H:%M", time.localtime(conversation.get("作った", _now()))),
         "",
     ]
+    if conversation.get("要約"):
+        out.extend(["## これまでの要約", conversation["要約"], ""])
     for turn in conversation.get("やりとり", []):
         who = "あなた" if turn["役"] == "user" else "カーネル"
         out.append(f"## {who}")
@@ -938,3 +967,73 @@ def rename_group(old, new):
                WHERE group_name = ? AND deleted_at IS NULL""",
             (_group(new), _now(), _group(old)),
         ).rowcount
+
+
+# 会話専用の状態。全体保存と独立して更新し、動きは200件まで。
+ACTIVITY_LIMIT = 200
+
+
+def _state(conn, cid):
+    row = conn.execute("SELECT data FROM conversation_state WHERE conversation_id=?", (cid,)).fetchone()
+    return json.loads(row[0]) if row else {}
+
+
+def get_state(cid):
+    with _db() as conn:
+        return _state(conn, _safe_id(cid))
+
+
+def update_state(cid, **changes):
+    cid = _safe_id(cid)
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        state = _state(conn, cid)
+        state.update(changes)
+        conn.execute("INSERT INTO conversation_state VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET data=excluded.data",
+                     (cid, json.dumps(state, ensure_ascii=False)))
+        return state
+
+
+def _activity(conn, cid):
+    return [json.loads(row[0]) for row in conn.execute(
+        "SELECT event FROM activity WHERE conversation_id=? ORDER BY id", (cid,))]
+
+
+def activities(cid, n=200):
+    with _db() as conn:
+        return _activity(conn, _safe_id(cid))[-max(1, min(int(n), ACTIVITY_LIMIT)):]
+
+
+def add_activity(cid, event):
+    if not cid:
+        return
+    cid = _safe_id(cid)
+    event = {**event, "時刻": event.get("時刻", _now())}
+    for key, value in list(event.items()):
+        if isinstance(value, str):
+            event[key] = value[:4000]
+    with _db() as conn:
+        conn.execute("INSERT INTO activity(conversation_id,event) VALUES (?,?)", (cid, json.dumps(event, ensure_ascii=False)))
+        conn.execute("DELETE FROM activity WHERE conversation_id=? AND id NOT IN (SELECT id FROM activity WHERE conversation_id=? ORDER BY id DESC LIMIT ?)",
+                     (cid, cid, ACTIVITY_LIMIT))
+
+
+def clear_activity(cid):
+    with _db() as conn:
+        conn.execute("DELETE FROM activity WHERE conversation_id=?", (_safe_id(cid),))
+
+
+def replace_context(cid, expected, recent, summary):
+    if not str(summary).strip():
+        raise ValueError("空の要約は保存できません")
+    cid = _safe_id(cid)
+    with _db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _load(conn, cid)["やりとり"] != expected:
+            raise ValueError("要約中に会話が変わりました。やり直してください")
+        _replace_turns(conn, cid, recent)
+        state = _state(conn, cid)
+        state["summary"] = str(summary).strip()
+        conn.execute("INSERT INTO conversation_state VALUES (?,?) ON CONFLICT(conversation_id) DO UPDATE SET data=excluded.data",
+                     (cid, json.dumps(state, ensure_ascii=False)))
+        conn.execute("UPDATE conversations SET updated=? WHERE id=?", (_now(), cid))
