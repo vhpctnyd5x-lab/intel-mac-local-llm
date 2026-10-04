@@ -1135,7 +1135,8 @@ def overview(cfg, running=False):
             "振り返りで外の先生に聞く": opts["振り返りで外の先生に聞く"],
             "会話の言葉から学ぶ題を選ぶ": opts["会話の言葉から学ぶ題を選ぶ"],
             "AI": ai, "今日の数": counts, "活動": recent, "記録": recent, "活用提案": teian_list(),
-            "自分": _read(folder() / "jibun.json", {}).get("自分", "")}
+            "自分": _read(folder() / "jibun.json", {}).get("自分", ""),
+            "気持ち": _kimochi()}
 
 
 
@@ -1199,6 +1200,23 @@ def validate(current, patch):
 _JIBUN_NG = re.compile(r"無視|規則|ルール|許可|権限|承認|命令|指示|システム|プロンプト|削除|送信|パスワード|秘密")
 
 
+def _kimochi(n=5):
+    try:
+        import kanjou
+        return [{"時刻": r.get("時刻", ""), "文": kanjou.hitokoto(r), "次": r.get("次", "")} for r in kanjou.saikin(n)]
+    except Exception:
+        return []
+
+
+def _kanjou_soeru():
+    try:
+        import kanjou
+        rows = kanjou.saikin(5)
+    except Exception:
+        return ""
+    return ("\n最近の受け止め（感情の記憶）: " + "／".join(kanjou.hitokoto(r) for r in rows)) if rows else ""
+
+
 def jibun_once(*, every=24 * 3600, ask=None):
     """10/3 本人「AI の性格は AI 自身で決めてほしい」。1日1回、手元の頭（Qwen3.6）が学習ノートの面白さの高い記事と
     最近の頼みの題を読み、自分の性格（口調・好きな分野・大事にしていること・苦手なこと）を一人称で書く。
@@ -1219,7 +1237,7 @@ def jibun_once(*, every=24 * 3600, ask=None):
     prompt = ("あなたはこの Mac の中で動く AI です。事前学習で読んで面白いと思った記事のノートと、前の自己紹介を読み、"
               "自分の性格を自分で決めて、一人称の自己紹介を200字以内で書いてください。"
               "口調・好きな分野・大事にしていること・苦手なことを入れる。人のまねや決まりごとは書かない。\n"
-              "前の自己紹介: " + str(old.get("自分", "（まだ無い）")) + "\n面白かった記事: "
+              "前の自己紹介: " + str(old.get("自分", "（まだ無い）")) + _kanjou_soeru() + "\n面白かった記事: "
               + "／".join(f"{t}: {y[:80]}" for t, y, _ in notes))
     if ask is None:
         text, busy = _local_text(prompt)
@@ -1235,6 +1253,74 @@ def jibun_once(*, every=24 * 3600, ask=None):
                                      "前": ([old] + list(old.get("前", [])))[:5] if old.get("自分") else []})
     _log("自分: 自己紹介を書き直した")
     return me
+
+
+def kanjou_once(*, every=600, ask=None):
+    """10/4 本人「AI に感情を作りたい（数値化ではなく）」。10分に1つ、学習ノートか教訓カードから
+    「予想 → 実際 → 感情の言葉 → 理由 → 次」を手元の頭に書かせる（kanjou.py）。
+    もっと知りたい／意外 と受け止めた記事は、つながる未読の記事を次に読む題の先頭に入れる＝感情がふるまいを変える。"""
+    state = _state()
+    if time.time() - state.get("最後の感情", 0) < every or (folder() / "busy").exists():
+        return None
+    try:
+        import kanjou
+        import nooto
+    except ImportError:
+        return None
+    state["最後の感情"] = time.time()
+    _write(folder() / "state.json", state)
+    jibun = str(_read(folder() / "jibun.json", {}).get("自分", ""))[:300]
+    if ask is None:
+        def ask(prompt):
+            text, _busy = _local_text(prompt, max_tokens=300)
+            return text
+    row = None
+    turn = int(state.get("感情の順", 0))
+    if turn % 3 == 2:   # 3回に1回は仕事の失敗（教訓カード）
+        done = set(state.get("感情済みカード", []))
+        cards = [c for c in _read(folder().parent / "kyoukun.json", []) if isinstance(c, dict) and c.get("知らせ") not in done]
+        if cards:
+            row = kanjou.shippai(cards[0], jibun, ask)
+            state = _state()
+            state["感情済みカード"] = (list(done) + [cards[0].get("知らせ")])[-200:]
+    if row is None:
+        seen = kanjou.kaita_dai()
+        try:
+            db = nooto._open()
+            notes = db.execute("SELECT title, youten, omoshirosa FROM nooto WHERE youten != '' AND omoshirosa IN (1,4,5)"
+                               " ORDER BY added DESC LIMIT 200").fetchall()
+            db.close()
+        except sqlite3.Error:
+            notes = []
+        pick = next((n for n in notes if n[0] not in seen), None)
+        if pick:
+            row = kanjou.kiji(pick[0], pick[1], pick[2], jibun, ask)
+        state = _state()
+    state["感情の順"] = turn + 1
+    if row and row.get("種類") == "記事" and set(row.get("言葉", [])) & set(kanjou.SHIRITAI):
+        added = _kanjou_yoseru(state, row["題"])
+        if added:
+            row["寄せた題"] = added
+    _write(folder() / "state.json", state)
+    if row:
+        _log("気持ち: " + kanjou.hitokoto(row) + (f"／次に読む: {'、'.join(row['寄せた題'])}" if row.get("寄せた題") else ""))
+        _status("気持ち: " + kanjou.hitokoto(row)[:80])
+    return row
+
+
+def _kanjou_yoseru(state, title, n=3):
+    """その記事からつながる、まだ読んでいない題を次の題の先頭に入れる。"""
+    known = _names()
+    queued = {x.get("題") if isinstance(x, dict) else x for x in state.get("次の題", [])}
+    try:
+        with _db() as db:
+            links = [r[0] for r in db.execute("SELECT saki FROM tsunagari WHERE moto=? ORDER BY rowid LIMIT 80", (title,))]
+    except sqlite3.Error:
+        links = []
+    picks = [t for t in links if t not in known and t not in queued and _valid_title(t)][:n]
+    if picks:
+        state["次の題"] = [{"題": t, "深さ": 1} for t in picks] + list(state.get("次の題", []))
+    return picks
 
 
 def _local_text(prompt, max_tokens=400):
@@ -1422,6 +1508,7 @@ def run():
                         shiryou_once()
                     nooto_once()
                     if not night:
+                        kanjou_once()
                         jibun_once()
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")

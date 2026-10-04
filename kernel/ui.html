@@ -1168,6 +1168,7 @@ function drawLearning(){
   const percent=Math.min(100,Math.round(used/limit*100));
   workview.innerHTML=`<div class="work-head"><h1>事前学習</h1><span class="sp"></span><span class="work-status">${g.動いている?"学習中":g.入?"待機中":"オフ"}</span></div>
     ${typeof g.自分==="string"&&g.自分.trim()?`<div class="work-card"><h2>AI の自己紹介</h2><p class="work-note" style="white-space:pre-wrap">${esc(g.自分)}</p></div>`:""}
+    ${Array.isArray(g.気持ち)&&g.気持ち.length?`<div class="work-card"><h2>最近の受け止め（感情の記憶）</h2>${g.気持ち.map(k=>`<p class="work-note"><small style="color:var(--dim)">${esc(k.時刻)}</small><br>${esc(k.文)}${k.次?`<br><small style="color:var(--dim)">次: ${esc(k.次)}</small>`:""}</p>`).join("")}</div>`:""}
     <div class="work-card"><h2>頭脳の動き（履歴）</h2><ol id="learn-ugoki" class="work-log" style="max-height:360px;overflow:auto"><li>読み込み中…</li></ol></div>
     <div class="work-card"><div class="work-row"><label class="work-control big"><input id="learn-on" type="checkbox" ${g.入?"checked":""}>事前学習 ${g.入?"オン":"オフ"}</label></div>
       <p class="work-note" style="margin-top:12px">Qwen3.6 の重みは変えません。調べた知識と技を貯めて、頭脳が道具で使えるようにします</p>

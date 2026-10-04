@@ -1277,6 +1277,23 @@ def _gakushuu_hint(request):
             + "。事前学習について答えるならこの中から選び、本文は shiru で確かめる。読んでいない事を付け足さない）")
 
 
+def _kanjou_hint(request):
+    """10/4: 「最近どう？」「何が楽しかった？」には、感情の記憶（kernel/kanjou.py）から道具なしで答える。"""
+    if not re.search(r"気持ち|感情|最近どう|どう感じ|楽しかった|うれしかった|嬉しかった|悔しかった|面白かった", request):
+        return ""
+    try:
+        import kanjou
+        rows = kanjou.saikin(6)
+    except Exception:
+        rows = []
+    if not rows:
+        return ""
+    return ("\n（カーネルより: あなたの感情の記憶（出来事・予想・受け止めた言葉・理由）: "
+            + "／".join(kanjou.hitokoto(r) + (f" 次: {r.get('次')}" if r.get('次') else "") for r in rows)
+            + "。気持ちを聞かれたら道具を使わずにこの記憶から答える。「感じた」と言い切らず「〜と受け止めた」と話す。"
+            "記憶に無い気持ちを作らない。相手を喜ばせるための言葉を足さない）")
+
+
 def _memory_hint(request):
     try:
         path = Path(os.environ.get("KERNEL_GAKUSHUU_DIR", Path.home() / "Library/Application Support/kernel-ai/gakushuu")) / "oboe.sqlite3"
@@ -2262,7 +2279,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     skill_note = _skill_hint(text)
     if skill_note:
         _emit(on_event, {"type": "note", "text": "スキル「" + skill_note.split("「", 1)[1].split("」", 1)[0] + "」の手順を使います。"})
-    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text) + _gakushuu_hint(text) + skill_note
+    initial = _user_context() + "\n依頼: " + text + knowledge + _memory_hint(text) + _gakushuu_hint(text) + _kanjou_hint(text) + skill_note
     if opts.get("kyoukun") is True:
         initial += _kyoukun_hint(text)
     if michi_conditions:
