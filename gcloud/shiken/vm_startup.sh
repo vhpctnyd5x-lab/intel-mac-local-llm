@@ -31,12 +31,12 @@ gcloud storage cp --quiet "$PREFIX/config.json" ./config.json
 tar -xzf llama-src.tar.gz; tar -xzf code.tar.gz
 export KERNEL_KIROKU_DIR="$WORK/state/kiroku" KERNEL_HIKAE_DIR="$WORK/state/hikae" KERNEL_HIKAE_PATH="$WORK/state/hikae" KERNEL_TSUIKA_DIR="$WORK/state/tsuika" KERNEL_WAZA_DIR="$WORK/state/waza"
 mkdir -p "$KERNEL_KIROKU_DIR" "$KERNEL_HIKAE_DIR" "$KERNEL_TSUIKA_DIR" "$KERNEL_WAZA_DIR"
-NOTE=llama.cpp CPUビルド; write_status
+NOTE="llama.cpp CPUビルド"; write_status
 cmake -S llama-src -B llama-src/build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_METAL=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
 cmake --build llama-src/build --target llama-server -j 8
-NOTE=模型取得; write_status
+NOTE="模型取得"; write_status
 gcloud storage cp --quiet "gs://$BUCKET/models/Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf" model.gguf
-NOTE=試験実行; write_status
+NOTE="試験実行"; write_status
 python3 - <<'PY'
 import json,shlex,subprocess,os,time,urllib.request
 c=json.load(open('config.json')); env=os.environ.copy(); env.update(c['env']); env['KERNEL_LOCAL_URL']='http://127.0.0.1:8080'; env['KOUKAI_VOCAB_KEEP']='vocab_keep_9999_q36_ids.txt'

@@ -68,8 +68,8 @@ if d.get('deleted') or set(d.get('includedPermissions',[])) != {'compute.instanc
 PY
 retry gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:$SA" --role="projects/$PROJECT/roles/$ROLE" --condition="$CONDITION" --quiet >/dev/null; BOUND=1
 retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" --role=roles/storage.objectAdmin --quiet >/dev/null; BUCKET_BOUND=1
-tar -czf "$TMP_WORK/llama-src.tar.gz" --exclude=build --exclude=.git -C "$(dirname "$LLAMA_SRC")" "$(basename "$LLAMA_SRC")"
-tar -czf "$TMP_WORK/code.tar.gz" --exclude='dougu/kekka' --exclude='dougu/jikken' --exclude='dougu/*.jsonl' -C "$ROOT" $(cd "$ROOT" && ls dougu/*.py) monosashi
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TMP_WORK/llama-src.tar.gz" --exclude=build --exclude=.git -C "$(dirname "$LLAMA_SRC")" "$(basename "$LLAMA_SRC")"
+COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TMP_WORK/code.tar.gz" --exclude='dougu/kekka' --exclude='dougu/jikken' --exclude='dougu/*.jsonl' -C "$ROOT" $(cd "$ROOT" && ls dougu/*.py) monosashi
 gcloud storage cp --quiet "$TMP_WORK/llama-src.tar.gz" "$PREFIX/llama-src.tar.gz"
 gcloud storage cp --quiet "$TMP_WORK/code.tar.gz" "$PREFIX/code.tar.gz"
 gcloud storage cp --quiet "$VOCAB" "$PREFIX/vocab_keep_9999_q36_ids.txt"
