@@ -214,7 +214,7 @@ def _ddg_no_saki(href: str) -> str:
 # 答えず、10分は叩かずに Wikipedia の検索 API へ回る。関門は本人が解くもの）。
 _FUSAGARI = [0.0]           # DDG が関門を出した時刻
 _FUSAGARI_BYOU = 600
-_WIKI_UA = "kernel-ai/1.0 (local research; +https://github.com/vhpctnyd5x-lab/localai-16gb)"
+_WIKI_UA = "kernel-ai/1.0 (local research; +https://github.com/vhpctnyd5x-lab/intel-mac-local-llm)"
 _TOI_GO = re.compile(r"(は|が|を|で|に|の)?(何|なに|どこ|誰|だれ|いつ|どの|どれ|どう|いくら|いくつ|なぜ)[^、。]*$")
 
 

@@ -4,7 +4,7 @@
 #         dougu/matsu.sh gcp       … GCP の VM が 0台になるまで
 #         dougu/matsu.sh pid N…    … Mac の処理が終わるまで
 # 終わったら ~/.cache/claude-ura/<種類> の印を消す（印は hooks の ~/.claude/scripts/ura_guard.py が付ける）。最長 6時間。
-REPO=vhpctnyd5x-lab/localai-16gb; cd "$(dirname "$0")/.."
+REPO=vhpctnyd5x-lab/intel-mac-local-llm; cd "$(dirname "$0")/.."
 SHU=${1:?actions / gcp / pid}; shift
 HAJIME=$(date -u -r ~/.cache/claude-ura/"$SHU" +%FT%TZ 2>/dev/null || date -u +%FT%TZ)   # 印の時刻から
 for i in $(seq 1 360); do
