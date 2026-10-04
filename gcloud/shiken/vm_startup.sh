@@ -28,7 +28,7 @@ gcloud storage cp --quiet "$PREFIX/code.tar.gz" .
 gcloud storage cp --quiet "$PREFIX/vocab_keep_9999_q36_ids.txt" .
 gcloud storage cp --quiet "$PREFIX/problem.jsonl" ./problem.jsonl
 gcloud storage cp --quiet "$PREFIX/config.json" ./config.json
-tar -xzf llama-src.tar.gz; tar -xzf code.tar.gz
+tar -xzf llama-src.tar.gz; tar -xzf code.tar.gz; [ -d llama-src ] || mv src llama-src   # tar の中は src/
 export KERNEL_KIROKU_DIR="$WORK/state/kiroku" KERNEL_HIKAE_DIR="$WORK/state/hikae" KERNEL_HIKAE_PATH="$WORK/state/hikae" KERNEL_TSUIKA_DIR="$WORK/state/tsuika" KERNEL_WAZA_DIR="$WORK/state/waza"
 mkdir -p "$KERNEL_KIROKU_DIR" "$KERNEL_HIKAE_DIR" "$KERNEL_TSUIKA_DIR" "$KERNEL_WAZA_DIR"
 NOTE="llama.cpp CPUビルド"; write_status
