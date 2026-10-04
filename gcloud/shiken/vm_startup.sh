@@ -22,7 +22,7 @@ mkdir -p "$WORK"; cd "$WORK"; write_status
 (while sleep 600; do gcloud storage cp --quiet /var/log/shiken-startup.log "$PREFIX/startup.log" >/dev/null 2>&1 || true; done) &
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq build-essential cmake libcurl4-openssl-dev libssl-dev python3 python3-venv curl ca-certificates google-cloud-cli
+apt-get install -y -qq build-essential cmake libcurl4-openssl-dev libssl-dev python3 python3-venv curl ca-certificates google-cloud-cli bubblewrap
 gcloud storage cp --quiet "$PREFIX/llama-src.tar.gz" .
 gcloud storage cp --quiet "$PREFIX/code.tar.gz" .
 gcloud storage cp --quiet "$PREFIX/vocab_keep_9999_q36_ids.txt" .
@@ -30,6 +30,7 @@ gcloud storage cp --quiet "$PREFIX/problem.jsonl" ./problem.jsonl
 gcloud storage cp --quiet "$PREFIX/config.json" ./config.json
 tar -xzf llama-src.tar.gz; tar -xzf code.tar.gz; [ -d llama-src ] || mv src llama-src   # tar の中は src/
 export KERNEL_KIROKU_DIR="$WORK/state/kiroku" KERNEL_HIKAE_DIR="$WORK/state/hikae" KERNEL_HIKAE_PATH="$WORK/state/hikae" KERNEL_TSUIKA_DIR="$WORK/state/tsuika" KERNEL_WAZA_DIR="$WORK/state/waza"
+export KOUKAI_SKIP_MAC=1
 mkdir -p "$KERNEL_KIROKU_DIR" "$KERNEL_HIKAE_DIR" "$KERNEL_TSUIKA_DIR" "$KERNEL_WAZA_DIR"
 NOTE="llama.cpp CPUビルド"; write_status
 cmake -S llama-src -B llama-src/build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_AVX512=OFF -DGGML_AMX_TILE=OFF -DGGML_AMX_INT8=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF

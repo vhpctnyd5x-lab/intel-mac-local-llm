@@ -1139,12 +1139,17 @@ def _job(args, risk, session, approved=False):
         except subprocess.TimeoutExpired:
             return {"ok": False, "結果": "60秒で時間切れになりました"}
     path = Path(gate._archive_text("", "jiyuu_job", session, 0))
-    executable = gate.hako._sandbox_executable(os.environ)
-    profile = gate.hako.build_profile(risk, bool(approved and risk == "戻せない" and _network_command(command)),
-                                      protected_roots=gate._protected_roots() + gate._mutation_only_roots(), deny_unlink=True)
-    process = subprocess.Popen([executable, "-p", profile, "/bin/zsh", "-lc", command],
+    env = os.environ.copy()
+    argv = gate.hako.command_argv(
+        command, risk=risk,
+        network_approved=bool(approved and risk == "戻せない" and _network_command(command)),
+        protected_roots=gate._protected_roots() + gate._mutation_only_roots(),
+        deny_unlink=True, env=env,
+    )
+    process = subprocess.Popen(argv,
                                cwd=os.path.expanduser("~"), stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+                               env=env)
     def capture():
         with path.open("a", encoding="utf-8") as output:
             for chunk in iter(lambda: process.stdout.read1(4096), b""):

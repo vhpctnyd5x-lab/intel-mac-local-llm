@@ -169,6 +169,74 @@ def _sandbox_executable(env: dict[str, str] | None) -> str:
     raise SandboxUnavailable("sandbox-exec がありません")
 
 
+def _bwrap_argv(
+    command: str,
+    *,
+    risk: str,
+    network_approved: bool = False,
+    home: str | os.PathLike[str] | None = None,
+    tmpdir: str | os.PathLike[str] | None = None,
+    protected_roots: Iterable[str | os.PathLike[str]] = (),
+    deny_unlink: bool = False,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Linux 用 bubblewrap 起動引数。Mac の SBPL 経路からは呼ばない。"""
+    if risk not in _RISKS:
+        raise ValueError(f"profile に使えない判定です: {risk}")
+    env = env or os.environ
+    executable = shutil.which("bwrap", path=env.get("PATH"))
+    if not executable:
+        raise SandboxUnavailable("bubblewrap (bwrap) がありません")
+    env_home = env.get("HOME") or str(Path.home())
+    home_path = _home_path(home or env_home, env_home)
+    tmpdir = tmpdir if tmpdir is not None else env.get("TMPDIR")
+    args = [executable, "--die-with-parent", "--new-session"]
+    if not network_approved:
+        args.append("--unshare-net")
+    # 閲覧は read-only のルートに一時領域だけを重ねる。変更可能な処理は
+    # 既存の SBPL と同じく保護対象以外のホスト領域を書き込み可能にする。
+    args += (["--ro-bind", "/", "/"] if risk == "見る" else ["--bind", "/", "/"])
+    args += ["--dev", "/dev", "--proc", "/proc", "--setenv", "HOME", home_path]
+    if tmpdir:
+        tmp_path = os.path.realpath(os.fspath(tmpdir))
+        if os.path.exists(tmp_path):
+            args += ["--bind", tmp_path, tmp_path]
+        args += ["--setenv", "TMPDIR", os.fspath(tmpdir)]
+    if risk in {"戻せる", "戻せない"}:
+        for path in _protected_paths(home_path, protected_roots):
+            if os.path.lexists(path):
+                args += ["--ro-bind", path, path]
+        # bwrap はパス正規表現を持たないため、既知の保護先を読み取り専用で重ねる。
+        for base in ("/", home_path):
+            node_modules = Path(base) / "node_modules"
+            for package in (node_modules / "@anthropic-ai", node_modules / "@openai" / "codex"):
+                if package.exists():
+                    args += ["--ro-bind", str(package), str(package)]
+    args += ["--", "/bin/bash", "-lc", command]
+    return args
+
+
+def command_argv(
+    command: str,
+    *,
+    risk: str,
+    network_approved: bool = False,
+    protected_roots: Iterable[str | os.PathLike[str]] = (),
+    deny_unlink: bool = False,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """sandbox 内で実行する argv。darwin では従来の形を維持する。"""
+    if sys.platform == "linux":
+        return _bwrap_argv(command, risk=risk, network_approved=network_approved,
+                           protected_roots=protected_roots, deny_unlink=deny_unlink, env=env)
+    executable = _sandbox_executable(env)
+    profile = build_profile(risk, network_approved,
+                            home=(env or os.environ).get("HOME"),
+                            tmpdir=(env or os.environ).get("TMPDIR"),
+                            protected_roots=protected_roots, deny_unlink=deny_unlink)
+    return [executable, "-p", profile, "/bin/zsh", "-lc", command]
+
+
 def _is_profile_start_error(completed: subprocess.CompletedProcess) -> bool:
     stderr = completed.stderr
     if not isinstance(stderr, str):
@@ -187,6 +255,12 @@ def run(
     **kwargs,
 ) -> subprocess.CompletedProcess:
     env = kwargs.get("env")
+    if sys.platform == "linux":
+        try:
+            return subprocess.run(command_argv(command, risk=risk, network_approved=network_approved,
+                                               protected_roots=protected_roots, deny_unlink=deny_unlink, env=env), **kwargs)
+        except OSError as error:
+            raise SandboxUnavailable("bubblewrap を起動できません") from error
     executable = _sandbox_executable(env)
     profile = build_profile(
         risk,

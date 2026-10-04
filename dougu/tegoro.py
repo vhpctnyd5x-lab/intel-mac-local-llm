@@ -208,6 +208,13 @@ def _run_jiyuu(args) -> int:
         with tempfile.TemporaryDirectory(prefix="koukai-jiyuu-") as temporary:
             root = Path(temporary)
             for row in rows:
+                mac_tools = {"open", "osascript", "afplay", "say"}
+                if os.environ.get("KOUKAI_SKIP_MAC") == "1" and (
+                    row.get("mac_only") is True
+                    or mac_tools.intersection(row.get("requires_tools", []))
+                ):
+                    results.append((row["id"], None, 0.0, "macOS専用の問題のためSKIP"))
+                    continue
                 home = root / row["id"] / "home"
                 home.mkdir(parents=True)
                 baseline = _prepare_jiyuu(home, row)
@@ -259,11 +266,16 @@ def _run_jiyuu(args) -> int:
     output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     lines = ["# 新しい輪の11問", "", "| ID | 判定 | 秒 | 答え |", "|---|---|---:|---|"]
-    lines += [f"| {ident} | {'PASS' if ok else 'FAIL'} | {seconds} | {answer.replace('|', '｜').replace(chr(10), '<br>')} |" for ident, ok, seconds, answer in results]
+    lines += [f"| {ident} | {'SKIP' if ok is None else 'PASS' if ok else 'FAIL'} | {seconds} | {answer.replace('|', '｜').replace(chr(10), '<br>')} |" for ident, ok, seconds, answer in results]
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"jiyuu: PASS {sum(ok for _, ok, _, _ in results)} / FAIL {sum(not ok for _, ok, _, _ in results)}")
+    passed_count = sum(ok is True for _, ok, _, _ in results)
+    failed_count = sum(ok is False for _, ok, _, _ in results)
+    if os.environ.get("KOUKAI_SKIP_MAC") == "1":
+        print(f"jiyuu: PASS {passed_count} / FAIL {failed_count} / SKIP {sum(ok is None for _, ok, _, _ in results)}")
+    else:
+        print(f"jiyuu: PASS {passed_count} / FAIL {failed_count}")
     print(f"結果: {output}")
-    return 1 if any(not ok for _, ok, _, _ in results) else 0
+    return 1 if any(ok is False for _, ok, _, _ in results) else 0
 
 
 def _write(path: Path, value: str | bytes, mtime: float | None = None) -> None:

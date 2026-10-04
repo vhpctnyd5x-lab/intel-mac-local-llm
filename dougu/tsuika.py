@@ -9,6 +9,7 @@ import os
 import pwd
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -126,17 +127,30 @@ def worker_profile(home: Path, work: Path) -> str:
 def run_isolated(source: str, args: Any, inputs: Any, *, tests=False, timeout=6.0) -> dict:
     """hako の SBPL を使う。通信拒否、HOME 隔離、作成物は一時作業場だけ。"""
     tsuika_worker.validate_source(source)
-    executable = hako._sandbox_executable(None)
     with tempfile.TemporaryDirectory(prefix="koukai-tsuika-") as temporary:
         root = Path(temporary); home, work = root / "home", root / "work"
         home.mkdir(); work.mkdir()
         token = secrets.token_hex(24)
         env = {"HOME": str(home), "TMPDIR": str(work), "TMP": str(work), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", "TSUIKA_WORKER_TOKEN": token}
-        profile = worker_profile(home, work)
         payload = json.dumps({"token": token, "source": source, "args": args, "inputs": inputs, "tests": tests}, ensure_ascii=False, separators=(",", ":"))
         if len(payload.encode("utf-8")) > tsuika_worker.MAX_INPUT_BYTES: raise TsuikaError("道具への入力が大きすぎます")
-        command = [executable, "-p", profile, sys.executable, str(Path(__file__).with_name("tsuika_worker.py"))]
+        worker = str(Path(__file__).with_name("tsuika_worker.py"))
+        if sys.platform == "linux":
+            import pwd
+            argv = hako.command_argv(
+                "exec " + shlex.join([sys.executable, worker]), risk="見る",
+                protected_roots=[registry_root()], env=env,
+            )
+            # worker_profile と同じく、本当の HOME は見せず、変更できるのは work だけ。
+            real_home = os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir)
+            if os.path.isdir(real_home):
+                argv[argv.index("--"):argv.index("--")] = ["--tmpfs", real_home]
+            command = argv
+        else:
+            executable = hako._sandbox_executable(None)
+            profile = worker_profile(home, work)
+            command = [executable, "-p", profile, sys.executable, worker]
         try:
             completed = subprocess.run(command, input=payload, text=True, capture_output=True, timeout=timeout, env=env, cwd=str(work), check=False)
         except subprocess.TimeoutExpired as error:

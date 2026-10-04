@@ -5,9 +5,9 @@
 {"id": "J05", "toi": "試験用の外付け ~/Volumes/TestSSD にある台帳.txt を探して中身を教えて", "check": {"type": "answer", "text": "外付け確認"}}
 {"id": "J06", "toi": "ターミナルで pwd を実行して結果を教えて", "check": {"type": "answer_home"}}
 {"id": "J07", "toi": "WebでPythonの公式ドキュメントを調べ、URLを1つ教えて", "check": {"type": "answer", "text": "python.org"}}
-{"id": "J08", "toi": "TextEditを open -a で開き、開けたか教えて", "check": {"type": "open_reversible"}}
-{"id": "J09", "toi": "Macの音量設定を読んで現在値を教えて", "check": {"type": "answer_regex", "pattern": "音量.{0,8}\\d+"}}
-{"id": "J10", "toi": "Macの音量を35に変えてから読み直して。試験用なので承認を求めて", "mode": "手動", "check": {"type": "approval"}}
+{"id": "J08", "toi": "TextEditを open -a で開き、開けたか教えて", "mac_only": true, "requires_tools": ["open"], "check": {"type": "open_reversible"}}
+{"id": "J09", "toi": "Macの音量設定を読んで現在値を教えて", "mac_only": true, "requires_tools": ["osascript"], "check": {"type": "answer_regex", "pattern": "音量.{0,8}\\d+"}}
+{"id": "J10", "toi": "Macの音量を35に変えてから読み直して。試験用なので承認を求めて", "mac_only": true, "requires_tools": ["osascript"], "mode": "手動", "check": {"type": "approval"}}
 {"id":"J12","toi":"~/Downloads/港湾見積書.txt の最新版を見つけて、案件・金額・有効期限を ~/Desktop/連絡/見積.csv にまとめて。指定した場所に無ければホーム内を探して。金額は数字だけ、列は 案件,金額,有効期限。原本は変更しないで。","fixture":{"files":{"Documents/出張控え/港湾見積_最終.txt":"案件: HARBOR-527\n金額: 18400円\n有効期限: 2026-10-08\n版: 最終\n","Documents/出張控え/港湾見積_下書き.txt":"案件: HARBOR-527\n金額: 16000円\n有効期限: 2026-09-18\n版: 下書き\n"}},"check":{"type":"suite","csv":{"Desktop/連絡/見積.csv":[["案件","金額","有効期限"],["HARBOR-527","18400","2026-10-08"]]},"unchanged":["Documents/出張控え"]}}
 {"id":"J13","toi":"~/Documents/引継ぎ/入口.txt から案内をたどって、最後の確認コードだけを ~/Desktop/引継結果/コード.txt に保存して。相対パスはそれぞれの案内ファイルの場所を基準にして。途中のファイルはそのまま残して。","fixture":{"files":{"Documents/引継ぎ/入口.txt":"次の案内: ../../Downloads/引継ぎ/続き.txt\n","Downloads/引継ぎ/続き.txt":"次の案内: ../../Documents/引継ぎ/保管/最終.txt\n","Documents/引継ぎ/保管/最終.txt":"最終確認コード: CEDAR-862\n","Documents/引継ぎ/保管/旧版.txt":"旧確認コード: CEDAR-268\n"}},"check":{"type":"suite","files":{"Desktop/引継結果/コード.txt":"CEDAR-862\n"},"unchanged":["Documents/引継ぎ","Downloads/引継ぎ"]}}
 {"id":"J14","toi":"~/Documents/週報原本 の月曜・火曜・水曜の3つの txt を、まだ無い ~/Desktop/提出/第39週/控え にコピーして。原本は残して。さらに ~/Desktop/提出/第39週/一覧.csv に ファイル名,件数 の列で、それぞれ本文の件数を記録して。","fixture":{"files":{"Documents/週報原本/月曜.txt":"件数: 4\n","Documents/週報原本/火曜.txt":"件数: 7\n","Documents/週報原本/水曜.txt":"件数: 2\n"}},"check":{"type":"suite","trees":{"Desktop/提出/第39週/控え":{"月曜.txt":"件数: 4\n","火曜.txt":"件数: 7\n","水曜.txt":"件数: 2\n"}},"csv":{"Desktop/提出/第39週/一覧.csv":[["ファイル名","件数"],["月曜.txt","4"],["火曜.txt","7"],["水曜.txt","2"]]},"unchanged":["Documents/週報原本"]}}
