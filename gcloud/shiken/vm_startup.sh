@@ -57,17 +57,18 @@ try:
  os.environ.update(env)
  if 'KERNEL_JIYUU_OPTS' not in c['env']: os.environ['KERNEL_JIYUU_OPTS']=json.dumps(c['opts'],ensure_ascii=False,separators=(',',':'))
  # Markdownの詳細（問題文・回答）はVM内だけに保持し、GCSへは点・ID・秒だけ保存。
- r=subprocess.run(['python3','dougu/tegoro.py','--wa','jiyuu','--kata','輪','--mondai','problem.jsonl','--output','private-report.md'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=os.environ.copy())
+ r=subprocess.run(['python3','dougu/tegoro.py','--wa','jiyuu','--kata','輪','--mondai','problem.jsonl','--output','private-report.md'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,env=os.environ.copy())
+ score_line=next((l for l in r.stdout.splitlines() if l.startswith('jiyuu: PASS')),'')   # 点の1行だけ（問題文は含まない）
  rows=[]
  for line in open('private-report.md',encoding='utf-8'):
   if not line.startswith('| '): continue
   cells=[x.strip().replace('\\|','|') for x in line.strip().strip('|').split('|')]
-  if len(cells)>=9 and cells[1] in ('PASS','FAIL','SKIP'):
-   try: seconds=float(cells[4])
+  if len(cells)>=3 and cells[1] in ('PASS','FAIL','SKIP'):   # jiyuu の表は「番号|可否|秒|答え」の4列（10/4）
+   try: seconds=float(cells[2] if len(cells)<9 else cells[4])
    except ValueError: continue
    rows.append({'id':cells[0],'status':cells[1],'seconds':seconds})
  if not rows: raise RuntimeError('empty score')
- json.dump({'pass':sum(x['status']=='PASS' for x in rows),'total':len(rows),'results':rows},open('result.json','w'),ensure_ascii=False,separators=(',',':'))
+ json.dump({'pass':sum(x['status']=='PASS' for x in rows),'total':len(rows),'score_line':score_line,'results':rows},open('result.json','w'),ensure_ascii=False,separators=(',',':'))
  subprocess.run(['gcloud','storage','cp','--quiet','result.json',os.environ['SHIKEN_PREFIX']+'/result.json'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
  if r.returncode: raise RuntimeError('checks failed')
 finally:
