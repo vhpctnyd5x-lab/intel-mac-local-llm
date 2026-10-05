@@ -10,18 +10,15 @@ import yarukoto
 
 
 class HumanFeaturesTest(unittest.TestCase):
-    def test_loop_accepts_nfkc_and_japanese_units(self):
-        self.assertEqual(loop.parse("/loop　３０　新しい技術を作る"),
-                         {"topic": "新しい技術を作る", "interval": 1800})
-        self.assertEqual(loop.parse("/loop 30分 お題")["interval"], 1800)
-        self.assertEqual(loop.parse("/loop 1時間 お題")["interval"], 3600)
-        self.assertEqual(loop.parse("/loop 90秒 お題")["interval"], 90)
-        self.assertEqual(loop.parse("/loop 30m お題")["interval"], 1800)
+    def test_loop_has_no_interval_and_skips_old_time_words(self):
+        self.assertEqual(loop.parse("/loop　３０　新しい技術を作る"), {"topic": "新しい技術を作る", "interval": loop.GAP})
+        for text in ("/loop 30分 お題", "/loop 1時間 お題", "/loop 90秒 お題", "/loop 30m お題", "/loop お題"):
+            self.assertEqual(loop.parse(text)["topic"], "お題")
 
-    def test_loop_start_message_explains_schedule(self):
-        self.assertEqual(loop.start_message(1800, "新しい技術", hour=19),
-                         "わかりました。30分ごとに『新しい技術』を最大20周やります。1周目は今から。")
-        self.assertIn("7時から", loop.start_message(3600, "題", hour=2))
+    def test_loop_start_message_says_until_stopped(self):
+        self.assertEqual(loop.start_message("新しい技術", hour=19),
+                         "わかりました。『新しい技術』を、止めるまで続けて回します。1周目を今から始めます。止めるときは /loop 止める か停止ボタン。")
+        self.assertIn("7時から", loop.start_message("題", hour=2))
 
     def test_aite_is_private_bounded_and_deletable(self):
         with tempfile.TemporaryDirectory() as temp:

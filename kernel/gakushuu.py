@@ -1221,7 +1221,8 @@ def overview(cfg, running=False):
             recent = db.execute("SELECT title FROM chishiki ORDER BY rowid DESC LIMIT 5").fetchall()
             branches = [{"題": title, "関連": [r[0] for r in db.execute(
                 "SELECT saki FROM tsunagari WHERE moto=? GROUP BY saki ORDER BY max(shurui='リンク') DESC, length(saki) DESC, saki LIMIT 3", (title,))]} for (title,) in recent]
-            branch_count = db.execute("SELECT count(*) FROM (SELECT 1 FROM tsunagari LIMIT 50000)").fetchone()[0]
+            # 10/5: 上限付きで数えると「50000」で頭打ち。count(*) は1741万行で遅いので、最後の番号で数える（消した分だけ多めに出る）。
+            branch_count = db.execute("SELECT max(rowid) FROM tsunagari").fetchone()[0] or 0
     except sqlite3.Error:
         count = 0
         branches, branch_count = [], 0
@@ -1581,7 +1582,10 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
     name = SHIRYOU_JUN[turn % len(SHIRYOU_JUN)]
     interests = state.get("興味", [])
     current_interest = next((x for x in interests if isinstance(x, dict) and x.get("問い")), {})
-    search_question = str(current_interest.get("問い") or current_interest.get("テーマ") or "")[:160]
+    current_interest = current_interest or next((x for x in interests if isinstance(x, dict) and x.get("テーマ")), {})
+    # 10/5: 問いの文をそのまま渡すと、法令などで関係の無い物（会社計算規則）が返って保存された。主な語で探し、当たらない物は捨てる。
+    keywords = re.findall(r"[ァ-ヶー]{3,}|[一-龯々]{2,}|[A-Za-z]{4,}", str(current_interest.get("テーマ") or current_interest.get("問い") or ""))[:3]
+    search_question = keywords[0] if keywords else ""
     state["最後のほかの資料"], state["ほかの資料の順"] = time.time(), turn + 1
     _write(folder() / "state.json", state)
     try:
@@ -1589,6 +1593,9 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
     except TypeError:  # 既存の試験用・古い取り込み関数
         item = toru(name)
     if not item or not item.get("題") or len(str(item.get("本文", ""))) < 200:
+        return None
+    if keywords and not any(k in str(item.get("題", "")) or k in str(item.get("本文", ""))[:5000] for k in keywords):
+        _log(f"ほかの資料: 興味（{'・'.join(keywords)}）に当たらないので読まない: {str(item.get('題'))[:60]}")
         return None
     title, body, source = str(item["題"])[:120], str(item["本文"])[:8000], str(item.get("出どころ") or name)
     if used_bytes() + len(body.encode("utf-8")) + 8192 > {**DEFAULT, **_cfg_learning()}.get("上限MB", 2048) * 1024 * 1024:

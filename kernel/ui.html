@@ -2191,7 +2191,7 @@ function renderConversation(c, opening=false){
   button.title = FOLDERS.join("\n") || "ホーム（保護された場所は除く）";
   const loop = c?.loop || {};
   document.getElementById("loop-stop").hidden = !loop.running;
-  document.getElementById("loop-status").textContent = loop.running ? `反復 ${loop.round || 0}/${loop.maximum || 20}周・${new Date((loop.next || 0)*1000).toLocaleTimeString()} に次の周` : "";
+  document.getElementById("loop-status").textContent = loop.running ? `反復中 ${loop.round || 0}周目（止めるまで続く）` : "";
 }
 
 function termAdd(){ /* 道具の動きはサーバーの会話別記録から読む。返答だけでは欄を出さない。 */ }

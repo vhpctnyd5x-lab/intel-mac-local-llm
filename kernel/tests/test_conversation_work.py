@@ -208,6 +208,18 @@ class ConversationWorkTests(unittest.TestCase):
         self.assertTrue(state["running"])
         self.assertEqual(datetime.datetime.fromtimestamp(state["next"]).hour, 7)
 
+    def test_loop_runs_until_stopped_and_backs_off_after_three_failures(self):
+        runner = mock.Mock(return_value={"ok": False, "result": "失敗"})
+        manager = self.make_loop(runner)
+        manager.start(self.cid, "お題")
+        for _ in range(3):
+            manager.tick()
+            self.clock[0] += loop.GAP
+        state = chats.get_state(self.cid)["loop"]
+        self.assertTrue(state["running"])
+        self.assertEqual(state["round"], 3)
+        self.assertGreaterEqual(state["next"] - self.clock[0], loop.BACKOFF - loop.GAP)
+
     def test_loop_inflight_restart_is_recorded_and_not_repeated(self):
         runner = mock.Mock(return_value={"ok": False, "result": "失敗"})
         manager = self.make_loop(runner)
@@ -220,10 +232,10 @@ class ConversationWorkTests(unittest.TestCase):
         self.assertEqual(chats.get_state(self.cid)["loop"]["round"], 2)
 
     def test_loop_command_parser(self):
-        self.assertEqual(loop.parse("/loop 30m 新しい技術を作って")["interval"], 1800)
-        self.assertEqual(loop.parse("/loop お題")["interval"], 600)
+        self.assertEqual(loop.parse("/loop 30m 新しい技術を作って")["topic"], "新しい技術を作って")
+        self.assertEqual(loop.parse("/loop お題")["interval"], loop.GAP)
         self.assertTrue(loop.parse("/loop 止める")["stop"])
-        for text in ("/loop", "/loop 0s お題", "/loop 30m"):
+        for text in ("/loop", "/loop 30m"):
             with self.assertRaises(ValueError):
                 loop.parse(text)
 

@@ -875,7 +875,7 @@ def _special_request(text, cid, tomeru):
             _stop_loop(cid)
             return "この会話の反復を止めました。"
         _LOOPS.start(cid, command["topic"], command["interval"])
-        return conversation_loop.start_message(command["interval"], command["topic"], time.localtime().tm_hour)
+        return conversation_loop.start_message(command["topic"], time.localtime().tm_hour)
     return None
 
 

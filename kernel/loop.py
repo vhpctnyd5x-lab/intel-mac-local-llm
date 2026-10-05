@@ -7,6 +7,10 @@ import unicodedata
 import uuid
 
 
+GAP = 5            # 10/5 本人「時間指定は要らない。止めるまでずっと動き続ける」: 周と周の間は5秒だけ
+BACKOFF = 300      # 3周続けて失敗したら（頭脳が止まっている等）5分休んでから続ける
+
+
 def parse(text):
     text = unicodedata.normalize("NFKC", str(text or "")).strip()
     parts = text.split(maxsplit=1)
@@ -15,26 +19,17 @@ def parse(text):
     rest = parts[1].strip() if len(parts) > 1 else ""
     if rest in {"止める", "stop"}:
         return {"stop": True}
-    interval = 600
-    match = re.match(r"^(\d+)\s*(秒|分|時間|s|m|h)?\s+(.+)$", rest, re.S)
-    if match:
-        amount = int(match[1])
-        unit = match[2] or "分"
-        interval = amount * {"秒": 1, "s": 1, "分": 60, "m": 60, "時間": 3600, "h": 3600}[unit]
-        rest = match[3].strip()
-    elif re.match(r"^\d+\s*(?:秒|分|時間|s|m|h)(?:\s|$)", rest):
-        raise ValueError("/loop 30 お題、/loop 30分 お題、/loop 1時間 お題 の形で入力してください")
-    if not rest or not 1 <= interval <= 604800:
-        raise ValueError("/loop お題（間隔は1秒〜7日）を入力してください")
-    return {"topic": rest, "interval": interval}
+    # 前の形（/loop 30 お題・/loop 30分 お題）の時間は読み飛ばす。
+    rest = re.sub(r"^\d+\s*(?:秒|分|時間|s|m|h)?(?:\s+|$)", "", rest).strip()
+    if not rest:
+        raise ValueError("/loop お題 の形で入力してください（止めるまで続けます。止めるときは /loop 止める）")
+    return {"topic": rest, "interval": GAP}
 
 
-def start_message(interval, topic, hour=None, maximum=20):
-    """依頼をそのまま確認し、初回の予定時刻も伝える。"""
-    minutes, seconds = divmod(int(interval), 60)
-    every = (f"{minutes}分" + (f"{seconds}秒" if seconds else "")) if minutes else f"{seconds}秒"
-    when = "7時から" if hour is not None and hour < 7 else "今から"
-    return f"わかりました。{every}ごとに『{topic}』を最大{maximum}周やります。1周目は{when}。"
+def start_message(topic, hour=None):
+    """依頼をそのまま確認し、いつ始まるか・どう止めるかを伝える。"""
+    when = "いまは夜なので、1周目は7時から始めます（夜の重い計算は Mac で回さない決まり）。" if hour is not None and hour < 7 else "1周目を今から始めます。"
+    return f"わかりました。『{topic}』を、止めるまで続けて回します。{when}止めるときは /loop 止める か停止ボタン。"
 
 
 class Manager:
@@ -47,7 +42,7 @@ class Manager:
         self.closing = threading.Event()
         self.thread = None
 
-    def start(self, cid, topic, interval=600, maximum=20):
+    def start(self, cid, topic, interval=GAP, maximum=None):
         with self.lock:
             if cid in self.active or self.chats.get_state(cid).get("loop", {}).get("running"):
                 raise ValueError("この会話の /loop は動いています。先に止めてください")
@@ -56,7 +51,7 @@ class Manager:
             if not self.chats.load(cid)["やりとり"]:
                 self.chats.add_turn(cid, "user", "【反復】" + topic)
             self.chats.update_state(cid, loop=state)
-            self.chats.add_activity(cid, {"type": "loop", "text": start_message(interval, topic, self.localtime(self.now()).hour, maximum)})
+            self.chats.add_activity(cid, {"type": "loop", "text": start_message(topic, self.localtime(self.now()).hour)})
             return state
 
     def stop(self, cid):
@@ -84,7 +79,7 @@ class Manager:
                     self.chats.update_state(cid, loop=state)
                     self.chats.add_activity(cid, {"type": "loop", "text": "夜間休止（7時に再開）"})
                     continue
-                if state.get("round", 0) >= state.get("maximum", 20):
+                if state.get("maximum") and state.get("round", 0) >= state["maximum"]:
                     self.stop(cid)
                     continue
                 stop = threading.Event()
@@ -115,8 +110,12 @@ class Manager:
                     current["records"] = (state.get("records", []) + [record])[-20:]
                     current["inflight"] = False
                     current["next"] = self.now() + state["interval"]
+                    recent = current["records"][-3:]
+                    if len(recent) == 3 and not any(r.get("ok") for r in recent):
+                        current["next"] = self.now() + max(state["interval"], BACKOFF)
+                        self.chats.add_activity(cid, {"type": "loop", "text": "3周続けて失敗したので、5分休んでから続けます"})
                     paused = self.closing.is_set() or self.localtime(self.now()).hour < 7
-                    current["running"] = bool(current.get("running")) and (not stop.is_set() or paused) and state["round"] < state["maximum"]
+                    current["running"] = bool(current.get("running")) and (not stop.is_set() or paused) and not (state.get("maximum") and state["round"] >= state["maximum"])
                     if self.localtime(self.now()).hour < 7:
                         current["next"] = self.localtime(self.now()).replace(hour=7, minute=0, second=0, microsecond=0).timestamp()
                     self.chats.update_state(cid, loop=current)
