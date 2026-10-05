@@ -2425,7 +2425,8 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     except (ImportError, OSError, ValueError):
         pass
     # 方針は同じ最初の道具呼び出しから組み立て、LLM 呼び出しは増やさない。
-    initial += "\n最初の一歩を始める前に、今回の進め方を1〜2文で『わかりました。今回は〜します』の形で示してください。"
+    # 10/5: 頭脳に「わかりました。今回は〜」を書かせると、その一言だけ返して道具を呼ばずに終わった（GCP で J11・J22・J24・J33）。
+    # 画面の一言は最初の道具呼び出しから組み立てる（下の note）。頭脳への指示には足さない。
     if opts.get("kyoukun") is True:
         initial += _kyoukun_hint(text)
     if michi_conditions:
