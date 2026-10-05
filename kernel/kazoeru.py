@@ -9,6 +9,13 @@
 """
 import ast, itertools, re
 
+_AIZU = re.compile(r"(?:何(?:個|人|枚|本|回|文字|字|ページ|件|円|通り)|いくつ|数えて|数えると|合計(?:は|を|して)?|足し(?:て|た|算)|引き(?:て|く|いた)|掛け(?:て|る)|割り(?:て|る)|計算(?:して|すると)?|\d\s*[+＋\-−×*÷/]\s*\d)")
+
+
+def aizu(text):
+    """古い道筋から数え上げ・四則計算へ振り分ける合図。"""
+    return bool(_AIZU.search(str(text or "")))
+
 GENKAI = 60_000_000   # 条件は 1つの関数に組んでから回すので 6千万通りで 20秒ほど
 _YOI = (ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.UnaryOp, ast.Not, ast.USub, ast.UAdd,
         ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod, ast.Compare, ast.Eq, ast.NotEq,

@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert captured[0]["cache_prompt"] is True
     assert captured[0]["tools"] == jiyuu.TOOLS
     assert captured[0]["chat_template_kwargs"]["enable_thinking"] is True
-    assert len(captured[0]["tools"]) == 15 and captured[0]["max_tokens"] == 128
+    assert len(captured[0]["tools"]) == 16 and captured[0]["max_tokens"] == 128
     checks += 1
     preview = jiyuu._short({"ok": True, "結果": "A" * 6000}, "long", 1)
     archive = Path(preview.split("全文: ", 1)[1].split(" …", 1)[0])
@@ -239,9 +239,10 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
                     {"content": "完了"}])
     with mock.patch.object(jiyuu, "_ask", side_effect=lambda *a, **k: next(replies)):
         assert jiyuu.kotaeru("台帳を読む", on_event=events.append) == "完了"
-    assert [e["type"] for e in events] == ["tool_start", "tool_end"]
-    assert events[0]["id"] == events[1]["id"] == "c1" and events[0]["risk"] == "見る"
-    assert events[1]["ok"] is True and "読む:" in events[0]["label"]
+    assert [e["type"] for e in events] == ["note", "tool_start", "tool_end"]
+    assert "わかりました。今回は" in events[0]["text"]
+    assert events[1]["id"] == events[2]["id"] == "c1" and events[1]["risk"] == "見る"
+    assert events[2]["ok"] is True and "読む:" in events[1]["label"]
     checks += 1
 
     def broken_event(_event):
@@ -709,6 +710,8 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
             db.execute("CREATE TABLE tsunagari(moto TEXT,saki TEXT,shurui TEXT)")
             db.execute("INSERT INTO tsunagari VALUES (?,?,?)", ("東京の歴史", "江戸", "本文"))
             db.execute("INSERT INTO chishiki VALUES (?,?,?,?,?)", ("江戸", "東京にあった町", "Wikipedia", "https://example.org", "今日"))
+            db.execute("CREATE TABLE daimei(title TEXT PRIMARY KEY,id INTEGER NOT NULL)")
+            db.execute("INSERT INTO daimei(title,id) SELECT title,rowid FROM chishiki")
             try:
                 db.execute("CREATE VIRTUAL TABLE chishiki_trigram USING fts5(title,text,source UNINDEXED,tokenize='trigram')")
                 db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) SELECT rowid,title,text,source FROM chishiki")

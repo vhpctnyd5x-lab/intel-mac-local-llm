@@ -15,9 +15,26 @@ main.py -- ひとつの入口
   会話の中では /help ですべてのコマンドが見られる。
 """
 import sys, os, time, argparse
+import importlib.util
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+
+_COUNT_TOOL = None
+
+
+def _count_tool():
+    """旧入口は kernel/kazoeru の式評価器でなく dougu/kazoeru の道具APIを使う。"""
+    global _COUNT_TOOL
+    if _COUNT_TOOL is None:
+        path = Path(HERE).parent / "dougu" / "kazoeru.py"
+        spec = importlib.util.spec_from_file_location("kernel_main_count_tool", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("数え上げ道具を読み込めません")
+        _COUNT_TOOL = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_COUNT_TOOL)
+    return _COUNT_TOOL
 
 import re
 import kernel
@@ -103,8 +120,14 @@ def _dougu(text, ctx):
     iu = lambda m: print(m) if cfg.get("考える様子") else None
     try:
         import kazoeru, web, tanmatsu, shigoto, sousa
-        if kazoeru.aizu(text):
-            na, toku = "数え上げ", kazoeru.toku
+        count_tool = _count_tool()
+        math_match = re.search(r"([0-9０-９(（][0-9０-９.．()（）+＋\-−×*÷/\s]*[0-9０-９)）])\s*(?:を)?\s*(?:計算|求め)", text)
+        if math_match:
+            expr = math_match.group(1).translate(str.maketrans("０１２３４５６７８９（）×÷－＋．", "0123456789()*/-+."))
+            na = "計算"
+            toku = lambda _text, iu=None: {"答え": kazoeru.keisan("式: " + expr), "確かめ": "安全な式評価"}
+        elif kazoeru.aizu(text):
+            na, toku = "数え上げ", count_tool.toku
         elif web.aizu(text):
             na, toku = "Web", web.kotaeru
         elif tanmatsu.aizu_tsuyoi(text) or (tanmatsu.aizu(text) and not chat.mono_no_hanashi(text)):
@@ -121,7 +144,9 @@ def _dougu(text, ctx):
     if cfg["覚える"]: mem.add("user", text)
     _say(ctx, "user", text)
     try:
-        r = toku(text, iu=iu)
+        import kyoudou as gate
+        with gate.hako.scope(cfg.get("触ってよいフォルダ")):
+            r = toku(text, iu=iu)
         if na == "数え上げ":
             ans = f"答え：{r['答え']}（{r['確かめ']}）" if r["答え"] is not None else \
                   f"数えきれませんでした（{r['確かめ']}）。問題文をもう少しはっきり書いてもらえますか。"
@@ -139,7 +164,7 @@ def _dougu(text, ctx):
         elif na == "操作":
             ans = r["報告"] + ("\n  手順:\n" + "\n".join("    %d. %s" % (i + 1, t) for i, t in enumerate(r["手"])) if r.get("手") else "")
         else:
-            ans = r["答え"] or ("できませんでした: %s" % (r.get("error") or "")).strip()
+            ans = str(r["答え"]) if r.get("答え") is not None else ("できませんでした: %s" % (r.get("error") or "")).strip()
     except Exception as e:
         ans = f"{na}の道具でつまずきました: {type(e).__name__}: {e}"
     print(f"\n  {ans}")

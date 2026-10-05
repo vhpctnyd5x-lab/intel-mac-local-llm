@@ -831,7 +831,7 @@ const log = document.getElementById("log");
 const ta  = document.getElementById("in");
 const sendBtn = document.getElementById("send");
 const palette = document.getElementById("palette");
-let COMMANDS = [], selIdx = 0, busy = false;
+let COMMANDS = [], selIdx = 0, busy = false, loopActivityTimer = null;
 
 const api = (p, opt = {}) => DEMO ? Promise.resolve(demoAPI(p, opt)) : fetch(p, {
   ...opt, headers: {"X-Token": TOKEN, "Content-Type": "application/json"}
@@ -1194,6 +1194,27 @@ function drawLearning(){
     <div class="work-card"><h2>活用の提案</h2><div id="learn-teian" class="skill-list">${(g.活用提案||[]).map((p,i)=>{if(!TEIAN_OPEN.includes(p.状態))return "";const c=p.中身||{};return `<article class="skill-card"><h2>${esc(p.題)}</h2><p><strong>目的:</strong> ${esc(c.目的||"")}</p><p><strong>適用条件:</strong> ${esc(c.適用条件||"")}</p><p><strong>根拠:</strong> ${(c.根拠||[]).map(x=>`${esc(x.記事||"")}（事実: ${esc(x.事実||x.一文||"")}／考え: ${esc(x.考え||"")}）`).join("; ")}</p><ol>${(c.手順||[]).map(s=>`<li>${esc(s)}</li>`).join("")}</ol><p><strong>確かめ方:</strong> ${esc(c.確かめ方||"")}</p><p><strong>まだ分からない点:</strong> ${esc(c.まだ分からない点||"")}</p>${c.先生の確かめ?`<p><strong>先生の確かめ:</strong> ${esc(c.先生の確かめ)}</p>`:""}<div class="work-row"><span class="made">${esc(p.状態)}${p.不要の理由?" ・ "+esc(p.不要の理由):""}</span><span class="sp"></span>${TEIAN_OPEN.includes(p.状態)?`${p.状態!=="試す"?`<button class="btn" data-teian-try="${i}" type="button">試す</button>`:""}<button class="btn go" data-teian-yes="${i}" type="button" title="技として残し、次から頭脳が使えるようにする">採用</button>${p.状態==="提案中"?`<button class="btn" data-teian-later="${i}" type="button">後で</button>`:""}<select data-teian-reason="${i}" data-teian-id="${esc(p.id)}" aria-label="不要の理由"><option value="">不要にする理由</option><option>用件に合わない</option><option>もうできる</option><option>手順が違う</option></select><button class="btn bad" data-teian-no="${i}" type="button">不要</button>`:""}</div></article>`}).join("")||`<p class="work-note">${(g.活用提案||[]).length?"いま決めることはありません。":"まだ提案はありません。"}</p>`}</div>${(()=>{const done=(g.活用提案||[]).filter(p=>!TEIAN_OPEN.includes(p.状態));return done.length?`<details class="work-note" style="margin-top:10px"><summary>決めたもの（${done.length}件）</summary><ul>${done.map(p=>`<li>${esc(p.題)} ・ ${esc(p.状態)}${p.不要の理由?"（"+esc(p.不要の理由)+"）":""}${p.状態==="採用"?" → 技として残しました":""}</li>`).join("")}</ul></details>`:"";})()}</div>
     <div class="work-card"><div class="work-row"><h2>技の提案</h2><span class="sp"></span><button class="btn" id="learn-skills" type="button">すべてのスキルを見る</button></div><div id="learn-proposals" class="skill-list"></div></div>`;
   drawUgoki();
+  if (g.成長 || (g.やったこと || []).length || (g.相手 || []).length){
+    const card = document.createElement("div"); card.className = "work-card";
+    const heading = document.createElement("h2"); heading.textContent = "成長・やったこと"; card.appendChild(heading);
+    const growth = document.createElement("p"); growth.className = "work-note";
+    growth.textContent = JSON.stringify((g.成長 || {}).仕事 || {}); card.appendChild(growth);
+    for (const task of (g.やったこと || []).slice(-8).reverse()){
+      const row = document.createElement("p"); row.className = "work-note";
+      row.textContent = (task.種類 || "学習") + " ・ " + (task.題 || "") + " — " + (task.結果 || ""); card.appendChild(row);
+    }
+    if ((g.相手 || []).length){
+      const privateHeading = document.createElement("h2"); privateHeading.textContent = "本人について（私的な記憶）"; card.appendChild(privateHeading);
+      (g.相手 || []).forEach((item, index) => {
+        const row = document.createElement("div"); row.className = "work-row";
+        const label = document.createElement("span"); label.textContent = item.文 || ""; row.appendChild(label);
+        const remove = document.createElement("button"); remove.className = "btn bad"; remove.type = "button"; remove.textContent = "消す";
+        remove.onclick = async () => { await api("/aite/delete", {method:"POST", body:JSON.stringify({index})}); loadLearning(); };
+        row.appendChild(remove); card.appendChild(row);
+      });
+    }
+    workview.insertBefore(card, workview.children[1] || null);
+  }
   scroller.scrollTop=keep;
   workview.querySelector("#learn-on").onchange=e=>updateLearning({入:e.target.checked});
   workview.querySelector("#learn-save-limit").onclick=()=>{
@@ -2333,6 +2354,29 @@ async function send(text){
   busy = false; sendBtn.disabled = false; ta.focus();
   if(compactDone && ST.いま)await openChat(ST.いま);
   else refresh();
+  if (text.normalize("NFKC").startsWith("/loop")) startLoopActivity(node, text.normalize("NFKC").includes("止める"));
+}
+
+function startLoopActivity(node, stopping=false){
+  if (loopActivityTimer){ clearInterval(loopActivityTimer); loopActivityTimer = null; }
+  if (stopping) return;
+  const box = document.createElement("div"); box.className = "keika"; node.appendChild(box);
+  let signature = "";
+  loopActivityTimer = setInterval(async () => {
+    const cid = ST.いま;
+    if (!cid){ clearInterval(loopActivityTimer); loopActivityTimer = null; box.remove(); return; }
+    try{
+      const state = await api("/chat/context?cid=" + encodeURIComponent(cid));
+      if (!state.loop?.running && !state.loop?.inflight){
+        clearInterval(loopActivityTimer); loopActivityTimer = null;
+        box.textContent = "反復が終わりました"; return;
+      }
+      const events = (await api("/ugoki?cid=" + encodeURIComponent(cid) + "&n=30")).動き || [];
+      const row = events[events.length - 1] || {};
+      const next = String(row.text || row.summary || row.label || "");
+      if (next && next !== signature){ signature = next; box.textContent = next.slice(0,160); }
+    }catch(e){}
+  }, 1500);
 }
 
 /* ---------- 流しながら受ける（/ask/stream）＋ 止める ---------- */
@@ -2346,6 +2390,23 @@ async function askNagashi(text, node, michi){
   sendBtn.classList.add("tomeru"); sendBtn.disabled = false; sendBtn.title = "止める";
   let moji = "", kangae = 0, kekka = null, kaiwa = null;
   const kaku = () => { pre.innerHTML = paint(moji || " "); log.scrollTop = log.scrollHeight; };
+  let activitySignature = "";
+  const readActivity = async () => {
+    const cid = kaiwa || ST.いま;
+    if (!cid) return;
+    try{
+      const rows = (await api("/ugoki?cid=" + encodeURIComponent(cid) + "&n=30")).動き || [];
+      const row = rows[rows.length - 1] || {};
+      const signature = [row.時刻,row.type,row.id,row.text,row.summary].join("|");
+      if (!signature || signature === activitySignature) return;
+      activitySignature = signature;
+      if (row.type === "tool_start") keika.innerHTML = "<b>" + esc(row.label || row.name || "道具を使っています") + "</b>";
+      else if (row.type === "tool_end") keika.innerHTML = "<b>" + esc(row.summary || (row.ok ? "終わりました" : "止まりました")) + "</b>";
+      else if (row.type === "note" || row.type === "loop") keika.innerHTML = "<b>" + esc(row.text || "") + "</b>";
+      log.scrollTop = log.scrollHeight;
+    }catch(e){}
+  };
+  const activityTimer = setInterval(readActivity, 1500);
   try{
     const r = await fetch("/ask/stream", {method:"POST", signal: ABORT.signal,
       headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify({text, 会話: ST.いま || undefined, michi})});
@@ -2372,6 +2433,7 @@ async function askNagashi(text, node, michi){
   }catch(e){
     if (e.name !== "AbortError") throw e;
   }finally{
+    clearInterval(activityTimer);
     sendBtn.classList.remove("tomeru"); sendBtn.title = "送る（Enter／改行は Shift+Enter）"; ABORT = null;
   }
   if (!kekka){

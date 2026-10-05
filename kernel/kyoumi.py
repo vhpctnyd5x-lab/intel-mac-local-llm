@@ -193,17 +193,18 @@ def hakken_once(*, every=6 * 3600, ask=None):
     except (ImportError, sqlite3.Error):
         return None
     tried = {tuple(sorted(x)) for x in state.get("試した組", []) if isinstance(x, list) and len(x) == 2}
-    linked = set()
-    try:
-        with g._db() as db:
-            linked = {tuple(sorted((a, b))) for a, b in db.execute("SELECT moto,saki FROM tsunagari")}
-    except sqlite3.Error:
-        pass
     def words(title):
         return set(re.findall(r"[a-z0-9]{2,}|[一-龯々ぁ-んァ-ヶー]{2,}", str(title).lower()))
-    candidates = [(a, b) for i, a in enumerate(rows) for b in rows[i + 1:]
-                  if a[2] >= 4 and b[2] >= 4 and tuple(sorted((a[0], b[0]))) not in tried
-                  and tuple(sorted((a[0], b[0]))) not in linked and not (words(a[0]) & words(b[0]))]
+    try:
+        with g._db() as db:
+            candidates = [(a, b) for i, a in enumerate(rows) for b in rows[i + 1:]
+                          if a[2] >= 4 and b[2] >= 4
+                          and tuple(sorted((a[0], b[0]))) not in tried
+                          and not db.execute("SELECT 1 FROM tsunagari WHERE (moto=? AND saki=?) OR (moto=? AND saki=?) LIMIT 1",
+                                             (a[0], b[0], b[0], a[0])).fetchone()
+                          and not (words(a[0]) & words(b[0]))]
+    except sqlite3.Error:
+        candidates = []
     pair = random.choice(candidates) if candidates else None
     if not pair:
         return None
@@ -278,7 +279,10 @@ def create_self_skill_once(*, ask=None, every=6 * 3600):
     old = index.get(name, {})
     index[name] = {"由来": str(item.get("由来", "経験記録"))[:300], "判断": decision,
                    "理由": str(item.get("理由", ""))[:300], "使用": old.get("使用", 0), "失敗": old.get("失敗", 0),
-                   "成功": old.get("成功", 0), "状態": "休止" if decision == "いらない" else "有効"}
+                   "成功": old.get("成功", 0), "状態": "休止" if decision == "いらない" else "有効",
+                   "強さ": old.get("強さ", 5), "最終使用日": old.get("最終使用日", ""),
+                   "見直し間隔日": old.get("見直し間隔日", 1),
+                   "次に見直す日": old.get("次に見直す日", time.strftime("%Y-%m-%d"))}
     (base / (name + ".md")).write_text(f"---\nname: {name}\ndescription: {desc}\non: {str(decision != 'いらない').lower()}\nmade_by: カーネル\n---\n{body}\n", encoding="utf-8")
     g._write(index_path, index)
     state["最後の自作スキル"] = time.time()
@@ -295,6 +299,12 @@ def record_self_skill_use(name, success):
     item["使用"] = int(item.get("使用", 0)) + 1
     key = "成功" if success else "失敗"
     item[key] = int(item.get(key, 0)) + 1
+    today = time.strftime("%Y-%m-%d")
+    interval = max(1, int(item.get("見直し間隔日", 1)))
+    item["強さ"] = min(10, int(item.get("強さ", 5)) + 1) if success else max(0, int(item.get("強さ", 5)) - 2)
+    item["最終使用日"] = today
+    item["見直し間隔日"] = min(60, interval * 2) if success else 1
+    item["次に見直す日"] = time.strftime("%Y-%m-%d", time.localtime(time.time() + item["見直し間隔日"] * 86400))
     if item["失敗"] >= 3 and item["失敗"] > item["成功"]:
         item.update({"判断": "いらない", "理由": "使用時の失敗が続いたため休止", "状態": "休止"})
         skill = _skill_dir() / (name + ".md")

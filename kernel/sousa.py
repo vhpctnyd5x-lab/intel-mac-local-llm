@@ -383,6 +383,11 @@ def _ugokasu(te: dict, g: dict, say) -> tuple[bool, str]:
         t = str(te.get("文字") or "")
         if not t:
             return False, "打つ文字が空"
+        path_value = t.strip().strip("\"'")
+        if path_value.startswith(("/", "~/")) or re.search(r"[/\\][^/\\]+\.[A-Za-z0-9]{1,8}$", path_value):
+            import kyoudou as gate
+            if not gate.hako.check_path(path_value, write=True):
+                return False, "門番: 入力先が触ってよいフォルダの外、または保護先なので打ちません"
         # ★ 目当てのアプリが前に出ていなければ打たない（実測: Claude の入力欄に「牛乳を買う」と打った）
         if g.get("目当て") and (g["アプリ"] or "") != g["目当て"]:
             return False, "前のアプリが %s（目当ては %s）なので打たなかった。先に「アプリ」で前に出すこと" % (g["アプリ"] or "不明", g["目当て"])
@@ -438,6 +443,13 @@ class _Yameta(Exception):
 def suru(mokuteki: str, iu=None, timeout: int = 120) -> dict:
     """目当てを画面操作で達成する。戻り: {"できた", "報告", "手": [...], "ミリ秒"}"""
     import shounin
+    # 古い道筋でも依頼文に現れた保存・作成先を、現在のフォルダ範囲で先に検査する。
+    if re.search(r"作|保存|書き|移し|コピー|変更|上書|削除|消し", mokuteki):
+        import kyoudou as gate
+        paths = re.findall(r"(?:~?/[^\s、。，]+|~/[^\s、。，]+)", str(mokuteki or ""))
+        for path in paths:
+            if not gate.hako.check_path(path, write=True):
+                return {"できた": False, "報告": "門番: 触ってよいフォルダの外、または保護先なので操作しません", "手": [], "ミリ秒": 0}
     say = iu or (lambda s: None)
     t0 = time.time()
     import hands

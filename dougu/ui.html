@@ -718,6 +718,7 @@ const ta  = document.getElementById("in");
 const sendBtn = document.getElementById("send");
 const palette = document.getElementById("palette");
 let COMMANDS = [], selIdx = 0, busy = false;
+let activityTimer = null, activitySeen = 0, loopActivityTimer = null;
 
 const api = (p, opt = {}) => fetch(p, {
   ...opt, headers: {"X-Token": TOKEN, "Content-Type": "application/json"}
@@ -1840,6 +1841,29 @@ async function send(text){
   }
   busy = false; sendBtn.disabled = false; ta.focus();
   refresh();
+  if (text.normalize("NFKC").startsWith("/loop")) startLoopActivity(node, text.normalize("NFKC").includes("止める"));
+}
+
+function startLoopActivity(node, stopping=false){
+  if (loopActivityTimer){ clearInterval(loopActivityTimer); loopActivityTimer = null; }
+  if (stopping) return;
+  const box = document.createElement("div"); box.className = "keika"; node.appendChild(box);
+  let signature = "";
+  loopActivityTimer = setInterval(async () => {
+    const cid = ST.いま;
+    if (!cid){ clearInterval(loopActivityTimer); loopActivityTimer = null; box.remove(); return; }
+    try{
+      const state = await api("/chat/context?cid=" + encodeURIComponent(cid));
+      if (!state.loop?.running && !state.loop?.inflight){
+        clearInterval(loopActivityTimer); loopActivityTimer = null;
+        box.textContent = "反復が終わりました"; return;
+      }
+      const events = (await api("/ugoki?cid=" + encodeURIComponent(cid) + "&n=30")).動き || [];
+      const row = events[events.length - 1] || {};
+      const next = String(row.text || row.summary || row.label || "");
+      if (next && next !== signature){ signature = next; box.textContent = next.slice(0,160); }
+    }catch(e){}
+  }, 1500);
 }
 
 /* ---------- 流しながら受ける（/ask/stream）＋ 止める ---------- */
@@ -1853,6 +1877,22 @@ async function askNagashi(text, node, michi){
   sendBtn.classList.add("tomeru"); sendBtn.disabled = false; sendBtn.title = "止める";
   let moji = "", kangae = 0, kekka = null, kaiwa = null;
   const kaku = () => { pre.innerHTML = paint(moji || " "); log.scrollTop = log.scrollHeight; };
+  const showActivity = async () => {
+    const cid = kaiwa || ST.いま;
+    if (!cid) return;
+    try{
+      const rows = (await api(\`/ugoki?cid=\${encodeURIComponent(cid)}&n=30\`)).動き || [];
+      if (rows.length > activitySeen){
+        const row = rows[rows.length - 1]; activitySeen = rows.length;
+        if (row.type === "tool_start") keika.innerHTML = \`<b>\${esc(row.label || row.name || "道具を使っています")}</b>\`;
+        else if (row.type === "tool_end") keika.innerHTML = \`<b>\${esc(row.summary || (row.ok ? "終わりました" : "止まりました"))}</b>\`;
+        else if (row.type === "loop") keika.innerHTML = \`<b>\${esc(row.text || "反復中")}</b>\`;
+        log.scrollTop = log.scrollHeight;
+      }
+    }catch(e){}
+  };
+  activitySeen = 0;
+  activityTimer = setInterval(showActivity, 1500);
   try{
     const r = await fetch("/ask/stream", {method:"POST", signal: ABORT.signal,
       headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify({text, 会話: ST.いま || undefined, michi})});
@@ -1867,6 +1907,7 @@ async function askNagashi(text, node, michi){
         if (m.会話) kaiwa = m.会話;
         if (m.経過 !== undefined){ keika.innerHTML = `<b>${esc(m.経過.trim().slice(0,90))}</b>`; }
         if (m.考え !== undefined){ kangae = m.考え; keika.innerHTML = `<b>考えています … ${kangae} 字</b>`; }
+        if (m.操作イベント?.type === "note") keika.innerHTML = `<b>${esc(m.操作イベント.text || "")}</b>`;
         if (m.文字 !== undefined){
           // 考えている間（答えの前）は字数だけ。答えは文字をそのまま。
           moji += m.文字; kaku();
@@ -1878,6 +1919,7 @@ async function askNagashi(text, node, michi){
   }catch(e){
     if (e.name !== "AbortError") throw e;
   }finally{
+    if (activityTimer){ clearInterval(activityTimer); activityTimer = null; }
     sendBtn.classList.remove("tomeru"); sendBtn.title = "送る（Enter／改行は Shift+Enter）"; ABORT = null;
   }
   if (!kekka){

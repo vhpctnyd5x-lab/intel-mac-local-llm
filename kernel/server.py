@@ -836,6 +836,31 @@ def _conversation_view(cid):
 
 
 def _special_request(text, cid, tomeru):
+    if text in {"/整理", "/眠る", "眠って整理して"}:
+        import seiri
+        try:
+            activities = []
+            for conversation in chats.listing()[:30]:
+                history = chats.load(conversation["id"]).get("やりとり", [])
+                activities.extend({"種類": "会話", "役": turn.get("役"), "文": turn.get("文", "")}
+                                  for turn in history[-12:] if turn.get("役") == "user")
+                activities.extend(chats.activities(conversation["id"], 20))
+            activities = activities[-100:]
+        except Exception:
+            activities = []
+        def ask(prompt):
+            import re
+            with _LOCK, _gakushuu_busy(), _temoto_tsukau():
+                ok, why = moderu_youi(KYOUDOU_MODERU["kyoudou"])
+                if not ok:
+                    return None
+                answer = conversation_context.request_json("/v1/chat/completions", {
+                    "messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "max_tokens": 900,
+                    "chat_template_kwargs": {"enable_thinking": False}}, timeout=180)
+                return re.sub(r"<think>.*?</think>", "", answer["choices"][0]["message"]["content"], flags=re.S).strip()
+        result = seiri.run(recent=activities, ask=ask)
+        return (f"整理しました。教訓を{result['まとめた数']}件まとめ、{result['思い出した数']}件見直し、弱くなった記録を"
+                f"{result['忘れた数']}件しまいました。日記: {result['日記']} 次にやること: {result['次にやること']}")
     if text in {"/compact", "/圧縮"}:
         with _LOCK, _gakushuu_busy(), _temoto_tsukau():
             ok, why = moderu_youi(KYOUDOU_MODERU["kyoudou"])
@@ -850,7 +875,7 @@ def _special_request(text, cid, tomeru):
             _stop_loop(cid)
             return "この会話の反復を止めました。"
         _LOOPS.start(cid, command["topic"], command["interval"])
-        return "反復を開始しました（最大20周・0〜7時は休止）。画面の停止ボタンか /loop 止める で止まります。"
+        return conversation_loop.start_message(command["interval"], command["topic"], time.localtime().tm_hour)
     return None
 
 
@@ -1028,6 +1053,11 @@ def handle_text_nagashi(text, q, tomeru, michi=None, rireki=None, cid=None, forc
                                     mode = ("読むだけ" if cfg.get("読むだけ") or cfg.get("モード") == "練習"
                                             else cfg.get("許可モード", "自動"))
                                     settei = {**cfg, **_conversation_options(cid), "反復": force_jiyuu, "輪の選び方": MODERU[moderu_key].get("輪の選び方", {})}
+                                    if cid:
+                                        try:
+                                            settei["文脈割合"] = _CONTEXT_METER.measure(chats.load(cid), cfg).get("割合", 0)
+                                        except (KeyError, TypeError, ValueError):
+                                            pass
                                     args = {"rireki": rireki, "mode": mode, "settei": settei}
                                     def on_event(ev):
                                         if isinstance(ev, dict) and ev.get("type") in ("tool_start", "tool_end", "note"):
@@ -1362,6 +1392,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             cid = query.get("cid", [None])[0]
             return self._json(_conversation_view(cid))
+        if path == "/aite":
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            import aite
+            return self._json({"相手": aite.list_items()})
         if path in ("/skills", "/gakushuu", "/gakushuu/teian"):
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)
@@ -1434,6 +1469,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(body, dict):
             return self._json({"error": "項目が違います"}, 400)
         path = self.path.split("?")[0]
+
+        if path == "/aite/delete":
+            try:
+                import aite
+                removed = aite.delete(body.get("index"))
+                return self._json({"ok": True, "消した": removed, "相手": aite.list_items()})
+            except (ValueError, TypeError, OSError) as e:
+                return self._json({"error": str(e)}, 400)
 
         if path == "/gakushuu/teian":
             try:
@@ -1529,6 +1572,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 rireki = _kyoudou_history(cid)
                 if text not in {"/compact", "/圧縮"}:
                     chats.add_turn(cid, "user", text)
+                    try:
+                        import aite
+                        aite.capture(text)
+                    except (ImportError, OSError, ValueError):
+                        pass
             except Exception:
                 cid = None
                 rireki = []

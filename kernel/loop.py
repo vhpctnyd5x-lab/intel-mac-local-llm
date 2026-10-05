@@ -3,26 +3,38 @@ import datetime
 import re
 import threading
 import time
+import unicodedata
 import uuid
 
 
 def parse(text):
-    parts = text.strip().split(maxsplit=1)
+    text = unicodedata.normalize("NFKC", str(text or "")).strip()
+    parts = text.split(maxsplit=1)
     if not parts or parts[0] != "/loop":
         return None
     rest = parts[1].strip() if len(parts) > 1 else ""
     if rest in {"止める", "stop"}:
         return {"stop": True}
     interval = 600
-    match = re.match(r"^(\d+)(s|m|h)\s+(.+)$", rest, re.S)
+    match = re.match(r"^(\d+)\s*(秒|分|時間|s|m|h)?\s+(.+)$", rest, re.S)
     if match:
-        interval = int(match[1]) * {"s": 1, "m": 60, "h": 3600}[match[2]]
+        amount = int(match[1])
+        unit = match[2] or "分"
+        interval = amount * {"秒": 1, "s": 1, "分": 60, "m": 60, "時間": 3600, "h": 3600}[unit]
         rest = match[3].strip()
-    elif re.match(r"^\d+(s|m|h)(?:\s|$)", rest):
-        raise ValueError("/loop 30m お題 の形で入力してください")
+    elif re.match(r"^\d+\s*(?:秒|分|時間|s|m|h)(?:\s|$)", rest):
+        raise ValueError("/loop 30 お題、/loop 30分 お題、/loop 1時間 お題 の形で入力してください")
     if not rest or not 1 <= interval <= 604800:
         raise ValueError("/loop お題（間隔は1秒〜7日）を入力してください")
     return {"topic": rest, "interval": interval}
+
+
+def start_message(interval, topic, hour=None, maximum=20):
+    """依頼をそのまま確認し、初回の予定時刻も伝える。"""
+    minutes, seconds = divmod(int(interval), 60)
+    every = (f"{minutes}分" + (f"{seconds}秒" if seconds else "")) if minutes else f"{seconds}秒"
+    when = "7時から" if hour is not None and hour < 7 else "今から"
+    return f"わかりました。{every}ごとに『{topic}』を最大{maximum}周やります。1周目は{when}。"
 
 
 class Manager:
@@ -44,7 +56,7 @@ class Manager:
             if not self.chats.load(cid)["やりとり"]:
                 self.chats.add_turn(cid, "user", "【反復】" + topic)
             self.chats.update_state(cid, loop=state)
-            self.chats.add_activity(cid, {"type": "loop", "text": f"反復を開始（{interval}秒間隔・最大{maximum}周）"})
+            self.chats.add_activity(cid, {"type": "loop", "text": start_message(interval, topic, self.localtime(self.now()).hour, maximum)})
             return state
 
     def stop(self, cid):
@@ -87,7 +99,7 @@ class Manager:
             prompt = (state["topic"] + "\n\n前の周の記録（資料）:\n" +
                       str(state.get("records", [])[-5:]) +
                       "\n今回は1周だけ。最後に『結果』『失敗』『次に試すこと』を書いてください。")
-            self.chats.add_activity(cid, {"type": "loop", "text": f"{state['round']}周目を開始"})
+            self.chats.add_activity(cid, {"type": "loop", "text": f"{state['round']}周目を開始: {state['topic']}"})
             try:
                 result = self.runner(cid, prompt, stop)
                 ok = bool(result.get("ok")) and not stop.is_set()

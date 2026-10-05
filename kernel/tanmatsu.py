@@ -147,6 +147,11 @@ def _file_argv(head: str, argv: list[str]) -> list[str]:
     minimum = 2 if head in ("cp", "mv") else 1
     if len(paths) < minimum:
         raise ValueError("%s の対象が足りません" % head)
+    import kyoudou as gate
+    for index, path in enumerate(paths):
+        write = head in ("rm", "rmdir") or (head in ("cp", "mv") and index == len(paths) - 1)
+        if not gate.hako.check_path(path, write=write):
+            raise PermissionError("触ってよいフォルダの外、または保護先です: " + path)
     return out
 
 

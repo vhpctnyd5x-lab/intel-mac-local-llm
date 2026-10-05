@@ -155,7 +155,8 @@ def au(terms, n=3, path=None):
 def kazu(path=None):
     try:
         db = _open(path)
-        total = db.execute("SELECT count(*) FROM chishiki").fetchone()[0]
+        total = db.execute("SELECT count(*) FROM daimei" if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='daimei'").fetchone() else "SELECT count(*) FROM chishiki").fetchone()[0]
         written = db.execute("SELECT count(*) FROM nooto WHERE youten != ''").fetchone()[0]
         db.close()
         return written, total

@@ -74,6 +74,9 @@ try:
  # 10/4: tegoro は1問でも FAIL なら 0 以外を返す。点が取れていれば試験は成功。
  if c.get('mondai_name')=='jiyuu.jsonl':   # 公開問題だけは詳細も残す（Mac との違いを調べる）
   subprocess.run(['gcloud','storage','cp','--quiet','private-report.md',os.environ['SHIKEN_PREFIX']+'/kouhai-report.md'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  # 10/5: 道具の呼び出し記録も持ち帰る（Linux だけ落ちる問の原因を見る。公開問題だけ）
+  subprocess.run(['tar','-czf','jiyuu_logs.tar.gz','-C','dougu/kekka','jiyuu_logs'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+  subprocess.run(['gcloud','storage','cp','--quiet','jiyuu_logs.tar.gz',os.environ['SHIKEN_PREFIX']+'/kouhai-logs.tar.gz'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 finally:
  server.terminate()
  try: server.wait(timeout=30)

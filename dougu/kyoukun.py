@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 
@@ -139,6 +140,18 @@ def soeru(request, path=None):
         return ""
     if not selected:
         return ""
+    today = time.strftime("%Y-%m-%d")
+    changed = False
+    for card in cards:
+        if card in selected:
+            interval = max(1, int(card.get("見直し間隔日", 1)))
+            card["強さ"] = min(10, int(card.get("強さ", 5)) + 1)
+            card["最終使用日"] = today
+            card["見直し間隔日"] = min(60, interval * 2)
+            card["次に見直す日"] = time.strftime("%Y-%m-%d", time.localtime(time.time() + card["見直し間隔日"] * 86400))
+            changed = True
+    if changed:
+        target.write_text(json.dumps(cards, ensure_ascii=False, indent=2), encoding="utf-8")
     prefix = "前に似た頼みで門番に直されたこと: ・"
     parts = []
     for card in selected:

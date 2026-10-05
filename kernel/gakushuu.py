@@ -216,12 +216,18 @@ def _db():
     db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS chishiki USING fts5(title, text, source UNINDEXED, url UNINDEXED, added UNINDEXED)")
     db.execute("CREATE TABLE IF NOT EXISTS tsunagari(moto TEXT NOT NULL, saki TEXT NOT NULL, shurui TEXT NOT NULL, UNIQUE(moto,saki,shurui))")
     db.execute("CREATE TABLE IF NOT EXISTS chishiki_meta(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS daimei(title TEXT PRIMARY KEY, id INTEGER NOT NULL)")
+    db.execute("CREATE INDEX IF NOT EXISTS tsunagari_saki ON tsunagari(saki)")
     _ensure_knowledge_indexes(db)
     return db
 
 
 def _ensure_knowledge_indexes(db):
     """既存DBの枝・日本語部分一致索引を初回だけ作る。以後の更新は保存時。"""
+    indexed = db.execute("SELECT 1 FROM chishiki_meta WHERE k='題索引'").fetchone()
+    if not indexed:
+        db.execute("INSERT OR IGNORE INTO daimei(title,id) SELECT title,rowid FROM chishiki")
+        db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('題索引','1')")
     trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone()
     if not trigram:
         try:
@@ -229,9 +235,21 @@ def _ensure_knowledge_indexes(db):
             db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) SELECT rowid,title,text,source FROM chishiki")
         except sqlite3.OperationalError:  # SQLite が trigram tokenizer を持たない場合も通常検索は動く。
             pass
+    # 題だけの trigram 索引で、本文検索と出ていく枝候補検索を分離する。
+    title_trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daimei_trigram'").fetchone()
+    if not title_trigram:
+        try:
+            db.execute("CREATE VIRTUAL TABLE daimei_trigram USING fts5(title, tokenize='trigram')")
+            db.execute("INSERT INTO daimei_trigram(rowid,title) SELECT id,title FROM daimei")
+        except sqlite3.OperationalError:
+            pass
     done = db.execute("SELECT v FROM chishiki_meta WHERE k='枝再構築'").fetchone()
     if not done:
-        _rebuild_relationships(db)
+        n = db.execute("SELECT count(*) FROM (SELECT 1 FROM chishiki LIMIT 20001)").fetchone()[0]
+        if n > 20000:
+            db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('枝再構築','省略:20000超')")
+        else:
+            _rebuild_relationships(db)
 
 
 def _rebuild_relationships(db):
@@ -245,7 +263,7 @@ def _rebuild_relationships(db):
                  if title != source and key in folded]
         db.executemany("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", edges)
     db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('枝再構築','1')")
-    return db.execute("SELECT count(*) FROM tsunagari").fetchone()[0]
+    return db.execute("SELECT count(*) FROM (SELECT 1 FROM tsunagari LIMIT 50000)").fetchone()[0]
 
 
 def rebuild_relationships():
@@ -256,12 +274,29 @@ def rebuild_relationships():
 
 
 def _add_article_edges(db, title, body, links=()):
-    current = title.casefold()
-    for other, old_body in db.execute("SELECT title,text FROM chishiki WHERE title<>? AND length(title)>=2", (title,)):
-        if other.casefold() in body.casefold():
-            db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (title, other, "本文"))
-        if current in old_body.casefold():
-            db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (other, title, "本文"))
+    folded = body.casefold()
+    # 出ていく枝: 本文の trigram で題候補を引き、実際の部分文字列だけを残す。
+    title_index = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daimei_trigram'").fetchone()
+    if title_index and len(folded) >= 3:
+        step = max(1, (len(folded) - 2) // 100)
+        grams = list(dict.fromkeys(folded[i:i+3] for i in range(0, len(folded)-2, step)))[:100]
+        found = set()
+        for gram in grams:
+            q = '"' + gram.replace('"', '""') + '"'
+            found.update(r[0] for r in db.execute(
+                "SELECT title FROM daimei_trigram WHERE daimei_trigram MATCH ? LIMIT 30", (q,)))
+            if len(found) >= 500:
+                break
+        edges = [(title, other, "本文") for other in found
+                 if other != title and other.casefold() in folded][:500]
+        db.executemany("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", edges)
+    # 入ってくる枝: 完全な題句を FTS trigram で探し、最大500本文を照合。
+    if len(title) >= 3 and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone():
+        q = '"' + title.replace('"', '""') + '"'
+        rows = db.execute("SELECT rowid,text FROM chishiki_trigram WHERE chishiki_trigram MATCH ? AND rowid<>? LIMIT 500",
+                          (q, db.execute("SELECT id FROM daimei WHERE title=?", (title,)).fetchone()[0])).fetchall()
+        db.executemany("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)",
+                       [(other, title, "本文") for other, text in rows if title.casefold() in text.casefold()])
     for other in links:
         if isinstance(other, str) and len(other.strip()) >= 2 and other.strip() != title:
             db.execute("INSERT OR IGNORE INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", (title, other.strip(), "リンク"))
@@ -270,6 +305,21 @@ def _add_article_edges(db, title, body, links=()):
 def _add_trigram(db, rowid, title, body, source):
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone():
         db.execute("INSERT INTO chishiki_trigram(rowid,title,text,source) VALUES(?,?,?,?)", (rowid, title, body, source))
+
+
+def _delete_article(db, title):
+    """記事を消す唯一の経路。本文・題のFTSと両方向の枝も同時に保つ。"""
+    row = db.execute("SELECT id FROM daimei WHERE title=?", (title,)).fetchone()
+    if not row:
+        return False
+    rowid = row[0]
+    db.execute("DELETE FROM chishiki WHERE rowid=?", (rowid,))
+    for table in ("chishiki_trigram", "daimei_trigram"):
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+            db.execute(f"DELETE FROM {table} WHERE rowid=?", (rowid,))
+    db.execute("DELETE FROM daimei WHERE id=?", (rowid,))
+    db.execute("DELETE FROM tsunagari WHERE moto=? OR saki=?", (title, title))
+    return True
 
 
 def used_bytes():
@@ -285,6 +335,14 @@ def used_bytes():
             pass
     for p in (folder() / "jisaku_skills").glob("*.md"):
         total += p.stat().st_size
+    try:
+        db_path = folder() / "chishiki.sqlite3"
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1) as db:
+            row = db.execute("SELECT v FROM chishiki_meta WHERE k='取り込み時の大きさ'").fetchone()
+        if row:
+            total = max(0, total - int(row[0]))
+    except (sqlite3.Error, OSError, ValueError):
+        pass
     return total
 
 
@@ -299,7 +357,17 @@ def charging():
 
 def _names():
     with _db() as db:
-        return {r[0] for r in db.execute("SELECT title FROM chishiki")}
+        # 古い道具・移行台本がFTSへ直接書いた分だけ題索引を差分補修する。
+        # 10/5: FTS の count(*) は 35万記事で 53 秒。最後の rowid だけ比べ、それより後ろだけ補う。
+        last = db.execute("SELECT rowid FROM chishiki ORDER BY rowid DESC LIMIT 1").fetchone()
+        indexed = db.execute("SELECT max(id) FROM daimei").fetchone()[0] or 0
+        if last and last[0] > indexed:
+            missing = db.execute("SELECT title,rowid FROM chishiki WHERE rowid>?", (indexed,)).fetchall()
+            db.executemany("INSERT OR IGNORE INTO daimei(title,id) VALUES(?,?)", missing)
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daimei_trigram'").fetchone():
+                db.executemany("INSERT OR IGNORE INTO daimei_trigram(rowid,title) VALUES(?,?)",
+                               [(rowid, title) for title, rowid in missing])
+        return {r[0] for r in db.execute("SELECT title FROM daimei")}
 
 
 def _recent_topics():
@@ -468,6 +536,9 @@ def _topic_entry(state, known, use_conversation=False):
 def _refetch_one(state, wiki_module):
     """覚えた Wikipedia の記事を1つ、本文（8,000字まで）で取り直す。取り直せたら True。
     取れなかった題も読んだことにする（消えた記事などで、同じ題に止まり続けない）。"""
+    with _db() as db:
+        if db.execute("SELECT v FROM chishiki_meta WHERE k='取り直し不要' AND v='1'").fetchone():
+            return False
     # 10/2: wiki.article が 1,200 字で切れていたので、全文で読み直した題は別の名前で数え直す（前の「本文を読んだ題」は使わない）
     read_titles = set(state.get("全文を読んだ題", []))
     with _db() as db:
@@ -484,8 +555,10 @@ def _refetch_one(state, wiki_module):
         _log(f"本文を取れず: {title}")
         return False
     with _db() as db:
-        row = db.execute("SELECT rowid FROM chishiki WHERE title=?", (title,)).fetchone()
-        db.execute("UPDATE chishiki SET text=? WHERE title=?", (body, title))
+        row = db.execute("SELECT id FROM daimei WHERE title=?", (title,)).fetchone()
+        if not row:
+            return False
+        db.execute("UPDATE chishiki SET text=? WHERE rowid=?", (body, row[0]))
         db.execute("DELETE FROM chishiki_trigram WHERE rowid=?", (row[0],))
         _add_trigram(db, row[0], title, body, "Wikipedia")
         db.execute("DELETE FROM tsunagari WHERE shurui='本文' AND (moto=? OR saki=?)", (title, title))
@@ -565,10 +638,13 @@ def learn_once(cfg, *, wiki_module=None):
         _status("容量の上限で休み")
         return False
     with _db() as db:
-        if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (actual,)).fetchone():
+        if db.execute("SELECT 1 FROM daimei WHERE title=?", (actual,)).fetchone():
             return False
         cursor = db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
                             (actual, body, "Wikipedia", article.get("url", ""), time.strftime("%Y-%m-%d %H:%M:%S")))
+        db.execute("INSERT INTO daimei(title,id) VALUES(?,?)", (actual, cursor.lastrowid))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daimei_trigram'").fetchone():
+            db.execute("INSERT INTO daimei_trigram(rowid,title) VALUES(?,?)", (cursor.lastrowid, actual))
         _add_trigram(db, cursor.lastrowid, actual, body, "Wikipedia")
         _add_article_edges(db, actual, body, article.get("ほかの候補", []))
     remaining = [x for x in state.get("次の題", [])
@@ -833,13 +909,23 @@ def _teian_evidence(request, *, search=None):
     scored = {}
     try:
         with _db() as db:
-            total = db.execute("SELECT count(*) FROM chishiki").fetchone()[0] or 1
+            total = db.execute("SELECT count(*) FROM (SELECT 1 FROM daimei LIMIT 50000)").fetchone()[0] or 1
             for term in terms:
-                rows = db.execute("SELECT rowid,title,text FROM chishiki WHERE title LIKE ? OR text LIKE ? LIMIT 100",
-                                  (f"%{term}%", f"%{term}%")).fetchall()
+                has_trigram = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chishiki_trigram'").fetchone()
+                if len(term) >= 3 and has_trigram:
+                    base = "FROM chishiki_trigram WHERE chishiki_trigram MATCH ?"
+                    params = ('"' + term.replace('"', '""') + '"',)
+                    count = db.execute("SELECT count(*) FROM (SELECT 1 " + base + " LIMIT 5000)", params).fetchone()[0]
+                    rows = db.execute("SELECT rowid,title,text " + base + " LIMIT 100", params).fetchall()
+                else:
+                    # 10/5: 表をつなぐと本文側（14GB）を全件なめることがある。番号を先に取り、本文は rowid で引く。
+                    ids = [r[0] for r in db.execute("SELECT id FROM daimei WHERE title LIKE ? LIMIT 5000", (f"%{term}%",))]
+                    count = len(ids)
+                    rows = [(i,) + tuple(r) for i in ids[:100]
+                            for r in [db.execute("SELECT title,text FROM chishiki WHERE rowid=?", (i,)).fetchone()] if r]
                 if not rows:
                     continue
-                weight = 0.1 + __import__("math").log(total / len(rows))
+                weight = 0.1 + __import__("math").log(total / max(1, count))
                 for rowid, title, text in rows:
                     old = scored.get(rowid, (0, title, text))
                     scored[rowid] = (old[0] + weight * (3 * title.count(term) + text.count(term)), title, text)
@@ -1131,11 +1217,11 @@ def overview(cfg, running=False):
     current = _state()
     try:
         with _db() as db:
-            count = db.execute("SELECT count(*) FROM chishiki").fetchone()[0]
+            count = db.execute("SELECT count(*) FROM daimei").fetchone()[0]
             recent = db.execute("SELECT title FROM chishiki ORDER BY rowid DESC LIMIT 5").fetchall()
             branches = [{"題": title, "関連": [r[0] for r in db.execute(
                 "SELECT saki FROM tsunagari WHERE moto=? GROUP BY saki ORDER BY max(shurui='リンク') DESC, length(saki) DESC, saki LIMIT 3", (title,))]} for (title,) in recent]
-            branch_count = db.execute("SELECT count(*) FROM tsunagari").fetchone()[0]
+            branch_count = db.execute("SELECT count(*) FROM (SELECT 1 FROM tsunagari LIMIT 50000)").fetchone()[0]
     except sqlite3.Error:
         count = 0
         branches, branch_count = [], 0
@@ -1165,6 +1251,20 @@ def overview(cfg, running=False):
           "確かめ": {"モデル": external, "思考の深さ": "high（外の先生）"}}
     interest_line = "／".join(x.get("テーマ", "") for x in current.get("興味", []) if isinstance(x, dict)) or "芽を探す入口を読み、興味が出るまで休む"
     one_line = f"{current.get('いま', '待機中')}／いまの興味: {interest_line}／問い: {current.get('読書中の問い', '') or '—'}"
+    growth = {}
+    try:
+        growth = json.loads((folder() / "seichou.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    try:
+        done = [json.loads(x) for x in (folder() / "yarukoto.jsonl").read_text(encoding="utf-8").splitlines()[-20:]]
+    except (OSError, ValueError):
+        done = []
+    try:
+        import aite as aite_memory
+        private_memo = aite_memory.list_items()
+    except (ImportError, OSError):
+        private_memo = []
     return {"入": opts["入"], "動いている": running, "いま": one_line,
             "数": {"記事": count, "技の提案": sum(s["made_by"] == "カーネル" for s in skills()), "枝": branch_count, "覚え書き": memory["数"]},
             "覚え書き": memory["一覧"],
@@ -1177,7 +1277,31 @@ def overview(cfg, running=False):
             "自分": _read(folder() / "jibun.json", {}).get("自分", ""),
             "気持ち": _kimochi(),
             "芯": _shin_list(),
-            "個性": _kosei(), **__import__("kyoumi").status()}
+            "個性": _kosei(), "成長": growth, "やったこと": done, "相手": private_memo,
+            **__import__("kyoumi").status()}
+
+
+def _nikki_once():
+    """1日に1件だけ、実際に残った学習結果を日記にする。"""
+    path = folder() / "nikki.jsonl"
+    today = time.strftime("%Y-%m-%d")
+    try:
+        rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+    except (OSError, ValueError):
+        rows = []
+    if any(row.get("日付") == today for row in rows if isinstance(row, dict)):
+        return False
+    try:
+        log = _tail_lines(folder() / "log.jsonl", 10)
+        latest = _read_line(log[-1]) if log else "今日の記録はまだありません"
+    except (OSError, ValueError):
+        latest = "今日の記録はまだありません"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"日付": today, "できたこと": str(latest)[:240],
+                            "つまずいたこと": "", "気持ち": "", "1行": str(latest)[:180]},
+                           ensure_ascii=False) + "\n")
+    return True
 
 
 
@@ -1470,12 +1594,15 @@ def shiryou_once(*, every=20, toru=None):   # 10/3: 90秒→20秒（本人「シ
     if used_bytes() + len(body.encode("utf-8")) + 8192 > {**DEFAULT, **_cfg_learning()}.get("上限MB", 2048) * 1024 * 1024:
         return None
     with _db() as db:
-        if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (title,)).fetchone():
+        if db.execute("SELECT 1 FROM daimei WHERE title=?", (title,)).fetchone():
             title = f"{title}（{source}）"   # Wikipedia と同じ題の教科書・法令も別の本として持つ
-            if db.execute("SELECT 1 FROM chishiki WHERE title=? LIMIT 1", (title,)).fetchone():
+            if db.execute("SELECT 1 FROM daimei WHERE title=?", (title,)).fetchone():
                 return None
         cursor = db.execute("INSERT INTO chishiki(title,text,source,url,added) VALUES(?,?,?,?,?)",
                             (title, body, source, str(item.get("url", "")), time.strftime("%Y-%m-%d %H:%M:%S")))
+        db.execute("INSERT INTO daimei(title,id) VALUES(?,?)", (title, cursor.lastrowid))
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='daimei_trigram'").fetchone():
+            db.execute("INSERT INTO daimei_trigram(rowid,title) VALUES(?,?)", (cursor.lastrowid, title))
         _add_trigram(db, cursor.lastrowid, title, body, source)
         _add_article_edges(db, title, body, item.get("ほかの候補", []) or [])
     _log(f"{source}: {title}（{len(body)}字）")
@@ -1634,6 +1761,14 @@ def run():
                     if not night:
                         kanjou_once()
                         jibun_once()
+                        _nikki_once()
+                        try:
+                            state = _state()
+                            if not state.get("興味"):
+                                import yarukoto
+                                yarukoto.run_once()
+                        except (ImportError, OSError, ValueError):
+                            pass
             except Exception as e:
                 _log(f"例外: {type(e).__name__}: {e}")
                 _status("失敗を記録し、次を待っています")
