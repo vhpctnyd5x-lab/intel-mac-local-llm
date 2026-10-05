@@ -128,7 +128,7 @@ def answer_note_question(ask=None):
 def _notes():
     import nooto
     db = nooto._open()
-    rows = db.execute("SELECT title,youten FROM nooto WHERE youten!='' ORDER BY added DESC LIMIT 300").fetchall()
+    rows = db.execute("SELECT title,youten,omoshirosa FROM nooto WHERE youten!='' ORDER BY added DESC LIMIT 300").fetchall()
     db.close()
     return rows
 
@@ -137,14 +137,19 @@ def common_ground(a, b, *, ask=None):
     """匿名化した関係構造を比較し、予測が転移確認された場合だけ保存する。"""
     try:
         notes = _notes()
-        evidence = [{"題": title, "要点": text[:240]} for title, text in notes
+        evidence = [{"題": title, "要点": text[:240]} for title, text, *_ in notes
                     if any(term and (term in title or term in text) for term in (str(a)[:20], str(b)[:20]))]
         snippets = []
         with g._db() as db:
             for term in (str(a)[:80], str(b)[:80]):
                 try:
-                    snippets.extend(db.execute("SELECT title,substr(text,1,800) FROM chishiki WHERE chishiki MATCH ? LIMIT 4",
-                                               (term.replace('"', ' ') + "*",)).fetchall())
+                    # 10/5: unicode61 は日本語を語に分けない。題の記事を先に、次に trigram で本文を引く（上限付き）。
+                    row = db.execute("SELECT id FROM daimei WHERE title=?", (term,)).fetchone()
+                    if row:
+                        snippets.extend(db.execute("SELECT title,substr(text,1,800) FROM chishiki WHERE rowid=?", (row[0],)).fetchall())
+                    if len(term) >= 3:
+                        snippets.extend(db.execute("SELECT title,substr(text,1,800) FROM chishiki_trigram WHERE chishiki_trigram MATCH ? LIMIT 3",
+                                                   ('"' + term.replace('"', '""') + '"',)).fetchall())
                 except sqlite3.Error:
                     pass
     except (ImportError, sqlite3.Error):
@@ -195,14 +200,23 @@ def hakken_once(*, every=6 * 3600, ask=None):
     tried = {tuple(sorted(x)) for x in state.get("試した組", []) if isinstance(x, list) and len(x) == 2}
     def words(title):
         return set(re.findall(r"[a-z0-9]{2,}|[一-龯々ぁ-んァ-ヶー]{2,}", str(title).lower()))
+    # 10/5: 300ノートの総当たり（4.5万組×問い合わせ）をやめ、面白い物から無作為に最大2000組だけ試す。
+    good = [r for r in rows if len(r) > 2 and (r[2] or 0) >= 4]
+    candidates, seen = [], set()
     try:
         with g._db() as db:
-            candidates = [(a, b) for i, a in enumerate(rows) for b in rows[i + 1:]
-                          if a[2] >= 4 and b[2] >= 4
-                          and tuple(sorted((a[0], b[0]))) not in tried
-                          and not db.execute("SELECT 1 FROM tsunagari WHERE (moto=? AND saki=?) OR (moto=? AND saki=?) LIMIT 1",
-                                             (a[0], b[0], b[0], a[0])).fetchone()
-                          and not (words(a[0]) & words(b[0]))]
+            for _ in range(2000 if len(good) >= 2 else 0):
+                a, b = random.sample(good, 2)
+                key = tuple(sorted((a[0], b[0])))
+                if key in tried or key in seen or words(a[0]) & words(b[0]):
+                    continue
+                if db.execute("SELECT 1 FROM tsunagari WHERE (moto=? AND saki=?) OR (moto=? AND saki=?) LIMIT 1",
+                              (a[0], b[0], b[0], a[0])).fetchone():
+                    continue
+                seen.add(key)
+                candidates.append((a, b))
+                if len(candidates) >= 20:
+                    break
     except sqlite3.Error:
         candidates = []
     pair = random.choice(candidates) if candidates else None

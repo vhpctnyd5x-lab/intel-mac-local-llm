@@ -80,6 +80,42 @@ def _parse(raw, titles, known):
     return out
 
 
+def _pick(db, n, path=None):
+    """ノートを書く記事を選ぶ。10/5: 35万記事を取り込んだ箱では、先頭から順に選ぶと取り込んだ記事に延々と書き続け、
+    NVIDIA のクレジット（使い切り）を食う。取り込みの後に読んだ記事と、いまの興味に当たる記事だけにする。"""
+    try:
+        row = db.execute("SELECT v FROM chishiki_meta WHERE k='取り込み時の最後'").fetchone()
+    except sqlite3.Error:
+        row = None
+    if not row:   # 取り込んでいない小さい箱は今まで通り
+        return db.execute("SELECT c.title, c.text FROM chishiki c WHERE c.title NOT IN (SELECT title FROM nooto)"
+                          " AND length(c.text) >= 300 LIMIT ?", (n,)).fetchall()
+    def fresh(rows):
+        return [(t, x) for t, x in rows if len(x or "") >= 300
+                and not db.execute("SELECT 1 FROM nooto WHERE title=?", (t,)).fetchone()]
+    items = fresh(db.execute("SELECT title,text FROM chishiki WHERE rowid>? ORDER BY rowid LIMIT 200", (int(row[0]),)).fetchall())
+    if len(items) < n:
+        try:
+            state = json.loads((Path(path or _db_path()).parent / "state.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        words = []
+        for x in state.get("興味", [])[:3]:
+            if isinstance(x, dict):
+                words += re.findall(r"[A-Za-z0-9]{3,}|[一-龯々ァ-ヶー]{3,}", f"{x.get('テーマ', '')} {x.get('問い', '')}")
+        seen = {t for t, _ in items}
+        for word in list(dict.fromkeys(words))[:6]:
+            try:
+                rows = db.execute("SELECT title,text FROM chishiki_trigram WHERE chishiki_trigram MATCH ? LIMIT 20",
+                                  ('"' + word.replace('"', '""') + '"',)).fetchall()
+            except sqlite3.Error:
+                break
+            items += [r for r in fresh(rows) if r[0] not in seen and not seen.add(r[0])]
+            if len(items) >= n:
+                break
+    return items[:n]
+
+
 def umeru(kazu=BATCH, ask=None, path=None, wait=1.0, workers=3):
     """ノートの無い記事を kazu 件まで埋める。書けた数を返す。
     10/3: 1回（4記事）に約80秒かかり、全部で14時間になるので、3つ同時に頼む（NVIDIA の無料枠は毎分40回まで）。"""
@@ -90,8 +126,7 @@ def umeru(kazu=BATCH, ask=None, path=None, wait=1.0, workers=3):
     try:
         known = [r[0] for r in db.execute("SELECT title FROM nooto ORDER BY added DESC LIMIT 200")]
         while done < kazu:
-            items = db.execute("SELECT c.title, c.text FROM chishiki c WHERE c.title NOT IN (SELECT title FROM nooto)"
-                               " AND length(c.text) >= 300 LIMIT ?", (min(BATCH * workers, kazu - done),)).fetchall()
+            items = _pick(db, min(BATCH * workers, kazu - done), path)
             if not items:
                 break
             groups = [items[i:i + BATCH] for i in range(0, len(items), BATCH)]

@@ -82,11 +82,14 @@ class DiscoveryTests(unittest.TestCase):
                 with gakushuu._db() as db:
                     db.execute("INSERT INTO tsunagari(moto,saki,shurui) VALUES(?,?,?)", ("銀河形成", "星形成", "test"))
                 kyoumi.hakken_once(every=0)
-                self.assertEqual(choose.call_args.args[0], [(rows[0], rows[2]), (rows[1], rows[2])])
+                got = {frozenset((a[0], b[0])) for a, b in choose.call_args.args[0]}   # 10/5: 無作為に引くので集合で比べる
+                self.assertEqual(got, {frozenset((rows[0][0], rows[2][0])), frozenset((rows[1][0], rows[2][0]))})
                 state = gakushuu._state()
-                self.assertEqual(state["試した組"], [["海洋循環", "銀河形成"]])
-                kyoumi.hakken_once(every=0)
-                self.assertEqual(choose.call_args.args[0], [(rows[1], rows[2])])
+                first = choose.call_args.args[0][0]
+                self.assertEqual(state["試した組"], [sorted((first[0][0], first[1][0]))])
+                kyoumi.hakken_once(every=0)   # 試した組は二度と選ばない
+                self.assertEqual({frozenset((a[0], b[0])) for a, b in choose.call_args.args[0]},
+                                 got - {frozenset((first[0][0], first[1][0]))})
 
 
 class SelfSkillTests(unittest.TestCase):

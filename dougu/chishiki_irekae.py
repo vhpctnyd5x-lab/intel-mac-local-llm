@@ -170,6 +170,9 @@ def i_rekae(production):
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         size = sum(p.stat().st_size for p in _sidecars(stage) if p.exists())
         db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('取り込み時の大きさ',?)", (str(size),))
+        # 10/5: ノートは取り込みの後に読んだ記事と興味の記事だけに書く（nooto._pick）。その境目。
+        last = db.execute("SELECT max(id) FROM daimei").fetchone()[0] or 0
+        db.execute("INSERT OR REPLACE INTO chishiki_meta(k,v) VALUES('取り込み時の最後',?)", (str(last),))
         db.commit()
         db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     try:

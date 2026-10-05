@@ -1770,7 +1770,9 @@ def run():
                         except (ImportError, OSError, ValueError):
                             pass
             except Exception as e:
-                _log(f"例外: {type(e).__name__}: {e}")
+                import traceback
+                where = "／".join(f"{Path(f.filename).name}:{f.lineno}" for f in traceback.extract_tb(e.__traceback__)[-3:])
+                _log(f"例外: {type(e).__name__}: {e}（{where}）")   # 10/5: どこで落ちたかを残す
                 _status("失敗を記録し、次を待っています")
             time.sleep(max(1, 2 - (time.monotonic() - started)))
     finally:
