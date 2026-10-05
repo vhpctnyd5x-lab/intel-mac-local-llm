@@ -43,7 +43,7 @@ plus the agent kernel (sandboxed tools, approval gate, self-learning) and the ma
 重みの値そのものは変えていません（量子化は元のまま）。
 
 **動かし方**: 動作を確かめたのは、llama.cpp に `source/llama_patch/` を当てて建てた llama-server です
-（語彙を 99.99% に絞る・KV の圧縮など）。手順は `source/README.md`。素の llama.cpp で読み込めるかは確かめていません。
+（語彙を 99.99% に絞る改造が入っています）。手順は `source/README.md`。素の llama.cpp で読み込めるかは確かめていません。
 
 ```sh
 llama-server -m Qwen3.6-35B-A3B-UD-Q2_K_XL-k160.gguf -t 6 -ngl 0 -c 32768 -np 2 -kvu --no-cache-idle-slots \
