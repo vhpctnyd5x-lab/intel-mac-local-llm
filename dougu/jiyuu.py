@@ -1162,8 +1162,15 @@ def _job(args, risk, session, approved=False):
             meaning = _exit_one_meaning(command) if completed.returncode == 1 and not (completed.stderr or "").strip() else ""
             if meaning:
                 return {"ok": True, "終了コード": 1, "結果": (output.rstrip() + "\n" if output.strip() else "") + meaning}
+            hint = ""
+            if not failed and not output.strip():
+                # 10/5 GCP J12: find ~ -name "港湾見積書.txt" が0件で「見つかりませんでした」と諦めた（最新版は別の名前）。
+                m = re.search(r"-i?name\s+['\"]?([^'\"\s*]+?)(?:\.[A-Za-z0-9]{1,5})?['\"]?(?:\s|$)", command)
+                if command.lstrip().startswith("find") and m and "*" not in m.group(0):
+                    hint = (f"\n（0件です。名前が少し違うかもしれません。部分名で探し直せます: "
+                            f"find ~ -iname '*{m.group(1)}*' 2>/dev/null）")
             return {"ok": not failed, "終了コード": completed.returncode,
-                    "結果": ("誤り: " if failed else "") + (output or ("出力なし" if not failed else "命令が失敗しました"))}
+                    "結果": ("誤り: " if failed else "") + (output or ("出力なし" if not failed else "命令が失敗しました")) + hint}
         except subprocess.TimeoutExpired:
             return {"ok": False, "結果": "60秒で時間切れになりました"}
     path = Path(gate._archive_text("", "jiyuu_job", session, 0))
