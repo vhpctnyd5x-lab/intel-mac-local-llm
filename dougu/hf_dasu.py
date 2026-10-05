@@ -53,5 +53,33 @@ def main():
     print("重みを上げた。公開:", f"https://huggingface.co/{repo}", flush=True)
 
 
+def omomi():
+    """10/5: 8.3GB の重みが2時間で上がりきらなかった。途中から続けられる upload_large_folder で上げる。説明書も上げ直す。"""
+    import os
+    sys.path.insert(0, str(Path.home() / ".claude/skills/ai-keychain/scripts"))
+    import access_broker
+    from huggingface_hub import HfApi
+    if NG is None:
+        sys.exit("dougu/kekka/ng_namae.txt が無いので止めます")
+    token = access_broker.request_secret("HF_API_KEY", requester="Claude",
+                                         reason="Hugging Face の intel-mac-local-llm に重み（8.3GB）を上げる続き")
+    if not token:
+        sys.exit("鍵を取り出せませんでした（拒否か未登録）")
+    api = HfApi(token=token)
+    repo = f"{api.whoami()['name']}/{NAME}"
+    if NG.search((KOUKAI / "hf/README.md").read_text(encoding="utf-8")):
+        sys.exit("説明書に本名が入っているので止めます")
+    api.upload_file(path_or_fileobj=str(KOUKAI / "hf/README.md"), path_in_repo="README.md", repo_id=repo,
+                    commit_message="Model card: drop an unverified claim")
+    print("説明書を上げ直した", flush=True)
+    stage = MODEL.parent / "hf_ageru"   # 同じディスクに固いリンク（写さない）。途中の記録も ここの .cache に残る
+    stage.mkdir(exist_ok=True)
+    target = stage / MODEL.name
+    if not target.exists():
+        os.link(MODEL, target)
+    api.upload_large_folder(repo_id=repo, folder_path=str(stage), repo_type="model")
+    print("重みを上げた。公開:", f"https://huggingface.co/{repo}", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    omomi() if sys.argv[1:] == ["omomi"] else main()
