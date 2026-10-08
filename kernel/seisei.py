@@ -123,8 +123,13 @@ def hint(request: str) -> str:
             body = doc.read_text(encoding="utf-8")[:2600]
         except OSError:
             body = ""
+        if re.search(r"分け|分割|リメッシュ|リトポ|UV展開図|焼き|ベイク|リグ|アニメ|動かし|glbを|取り込|仕上げ|テクスチャ", text):
+            try:
+                body += "\n" + Path(__file__).with_name("sanjigen_shiage.md").read_text(encoding="utf-8")[:2200]
+            except OSError:
+                pass
         return ("\n（カーネルより: 3D は道具 tsukuru（kind=3d、script に Blender の台本）で作る。作品は ~/Documents/カーネルの作品 に入り、"
-                "下見の画像は画面に出る。失敗したら台本を直してもう一度）\n" + body)
+                "下見の画像は画面に出る。結果の中心・大きさを見て、意図と違えば台本を直してもう一度）\n" + body)
     try:
         import seisei_hoka
         extra = seisei_hoka.hint(text) if re.search(r"読み上げ|音声|ナレーション|背景|切り抜|動画|映像|一周", text) else ""

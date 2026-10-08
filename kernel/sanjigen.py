@@ -681,6 +681,16 @@ def _worker(payload_path):
         kit = types.ModuleType('kit', '軽い3Dモデリングの道具箱')
         for name in _TOOLS:
             setattr(kit, name, globals()[name])
+        try:   # 10/8: 画像由来の 3D の仕上げ（部品分け・リメッシュ・UV・焼き写し・リグ・アニメ・動画）
+            sys.path.insert(0, str(Path(__file__).resolve().parent))   # Blender の --python では台本のフォルダが入らない
+            import sanjigen_shiage as shiage
+            shiage.configure_output(_output)
+            for name in shiage.TOOLS:
+                setattr(kit, name, getattr(shiage, name))
+                globals()[name] = getattr(shiage, name)
+            _TOOLS.extend(n for n in shiage.TOOLS if n not in _TOOLS)
+        except ImportError:
+            pass
         kit.__getattr__ = _kit_alias   # 10/8: 頭脳が uvSphere と書いた（本番の試しで3回とも落ちた）
         sys.modules['kit'] = kit
         import builtins
