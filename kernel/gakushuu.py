@@ -599,7 +599,8 @@ def learn_once(cfg, *, wiki_module=None):
             # 交互の取り直しも始まらず、2,332 記事が要約（中央 189 字）のまま止まっていた。
             if _refetch_one(state, wiki_module):
                 return True
-            _status("興味に沿う題が尽きたので休みます" if state.get("芽探索済み") else "次の題を待っています")
+            _status("Wikipedia の題が尽きたので、教科書・文学・法令・論文を読みながら次の興味を考えています"
+                    if state.get("芽探索済み") else "次の題を待っています")
             return False
         item = grow[0]
         article = _wiki(wiki_module.ask, item["題"], chars=5000) or {}
@@ -847,7 +848,9 @@ def _teian_db():
 
 def teian_list():
     with _teian_db() as db:
-        rows = db.execute("SELECT id,題,中身,根拠の記事,状態,不要の理由,作った日時,選んだ日時 FROM teian ORDER BY id DESC LIMIT 30").fetchall()
+        # 10/8 本人「同じものは書かないで」: 型どおりの提案（やることの代わり、根拠なし）は出さない
+        rows = db.execute("SELECT id,題,中身,根拠の記事,状態,不要の理由,作った日時,選んだ日時 FROM teian "
+                          "WHERE NOT (用件の識別 LIKE 'yarukoto:%' AND 根拠の記事='' AND 状態='提案中') ORDER BY id DESC LIMIT 30").fetchall()
     result = []
     for ident, title, content, article, status, reason, made, chosen in rows:
         try:

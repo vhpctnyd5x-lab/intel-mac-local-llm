@@ -116,6 +116,7 @@ def _create_schema(conn):
             event TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS activity_conversation ON activity(conversation_id, id);
+        CREATE TABLE IF NOT EXISTS legacy_imported (id TEXT PRIMARY KEY);
         CREATE INDEX IF NOT EXISTS conversations_visible_updated
             ON conversations(deleted_at, archived, updated DESC);
         CREATE INDEX IF NOT EXISTS turns_conversation_position
@@ -168,6 +169,10 @@ def _migrate_legacy(conn):
             cid = _safe_id(legacy.get("id") or filename[:-5])
         except (OSError, ValueError, json.JSONDecodeError):
             continue
+        # 10/8 本人: ゴミ箱を空にしても、次の起動で旧 JSON から読み直されて戻ってきた。旧 JSON は1回だけ取り込む。
+        if conn.execute("SELECT 1 FROM legacy_imported WHERE id = ?", (cid,)).fetchone():
+            continue
+        conn.execute("INSERT OR IGNORE INTO legacy_imported VALUES (?)", (cid,))
 
         now = _now()
         created = _float(legacy.get("作った"), now)

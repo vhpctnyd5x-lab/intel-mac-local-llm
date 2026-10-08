@@ -71,7 +71,13 @@ def interests_once(*, every=3600, ask=None):
               "問いに答えそうな記事題も選ぶ。材料が乏しければ空配列。JSONのみ: "
               '{"興味":[{"テーマ":"…","理由":"…","問い":"…","題":"…"}]}\n'
               + json.dumps(materials, ensure_ascii=False)[:8000])
-    data = _obj(_ask(prompt, ask))
+    raw = _ask(prompt, ask)
+    if raw is None:   # 10/8: 頭を呼べなかった時に興味を空で上書きし、「題が尽きたので休みます」になっていた
+        state = g._state()
+        state["最後の興味更新"] = time.time() - every + 600
+        g._write(g.folder() / "state.json", state)
+        return state.get("興味", [])
+    data = _obj(raw)
     rows = data.get("興味", [])
     result = []
     if isinstance(rows, list):
@@ -82,7 +88,8 @@ def interests_once(*, every=3600, ask=None):
             if item["テーマ"] and item["理由"] and item["問い"] and g._valid_title(item["題"]):
                 result.append(item)
     state = g._state()
-    state.update({"興味": result, "最後の興味更新": time.time()})
+    # 興味が空なら10分後に考え直す（1時間休まない）
+    state.update({"興味": result, "最後の興味更新": time.time() - (0 if result else every - 600)})
     if not result and not state.get("芽探索済み"):
         known = g._names()
         state["次の題"] = [{"題": title, "深さ": 0, "入口": True} for title in ENTRANCES if title not in known]

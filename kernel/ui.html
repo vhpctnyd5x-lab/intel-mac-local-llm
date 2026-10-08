@@ -1257,6 +1257,26 @@ function drawLearning(){
 setInterval(()=>{if(VIEW!=="gakushuu"||document.hidden)return;loadUgoki();if(document.activeElement?.id!=="learn-limit")loadLearning();},5000);
 
 function drawChats(){
+  drawChatList();
+  // 10/8 本人: ゴミ箱・しまったものを開くと、元の会話一覧へ戻るボタンが無かった（メニューの中に隠れていた）
+  if (ARCH || TRASH){
+    const bar = document.createElement("div");
+    bar.id = "backbar";
+    bar.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line);font-size:12px";
+    bar.innerHTML = `<button class="btn" type="button" id="c-back" title="会話の一覧に戻る（Esc）">← 会話に戻る</button><span style="color:var(--dim)">${TRASH ? "ゴミ箱" : "しまったもの"}を見ています</span>`;
+    chatlist.prepend(bar);
+    bar.querySelector("#c-back").onclick = backToChats;
+  }
+}
+function backToChats(){
+  ARCH = false; TRASH = false; SEL = false; ERANDA.clear();
+  drawChats();
+  if (ST.いま) chatlist.querySelector(`.crow[data-id="${ST.いま}"]`)?.scrollIntoView({block:"nearest"});
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && (ARCH || TRASH) && !veil.classList.contains("on") && !DD && !ABORT && !document.querySelector("[data-cancel]")) backToChats();
+});
+function drawChatList(){
   CHAT_SIG = JSON.stringify([ST.会話,ST.ゴミ箱,ST.いま,ARCH,TRASH,SEL,[...ERANDA]]);
   const list = (TRASH ? (ST.ゴミ箱 || []) : (ST.会話 || []))
     .filter(c => TRASH || (ARCH ? c.しまった : !c.しまった));
@@ -1661,8 +1681,9 @@ document.getElementById("chat-menu").onclick=e=>{
   openDrop(e.currentTarget,[
     {名:"えらんでまとめる",絵:"chk",する:()=>document.getElementById("c-sel").click()},
     {名:"整理の案を見る",絵:"chk",する:()=>document.getElementById("c-seiri").click()},
-    {名:"しまったもの",絵:"box",する:()=>document.getElementById("c-arch").click()},
-    {名:"ゴミ箱",絵:"del",する:()=>document.getElementById("c-trash").click()}
+    ...((ARCH||TRASH) ? [{名:"会話に戻る",絵:"chk",する:backToChats}] : []),
+    {名:"しまったもの",絵:"box",する:()=>{ARCH = true; TRASH = false; drawChats();}},
+    {名:"ゴミ箱",絵:"del",する:()=>{TRASH = true; ARCH = false; SEL = false; ERANDA.clear(); drawChats();}}
   ],{left:true});
   DD?.querySelector(".it")?.focus();
 };

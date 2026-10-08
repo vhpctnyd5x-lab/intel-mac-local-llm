@@ -36,12 +36,14 @@ def choose(folder=None, now=None, use_conversations=True):
         if not use_conversations:
             raise ImportError
         import chats
+        done = {str(x.get("題", "")) for x in rows}   # 10/8 本人: 同じ会話から同じ提案が何度も出た
         for conv in chats.listing()[:12]:
             history = chats.load(conv["id"]).get("やりとり", [])
             turns = [str(x.get("文", "")) for x in history if x.get("役") == "user"]
             if turns:
                 topic = _safe(turns[-1])
-                if len(topic) >= 4 and not topic.startswith("/"):
+                if (len(topic) >= 4 and not topic.startswith(("/", "【反復")) and topic[:100] not in done
+                        and not __import__("re").match(r"\d+\.\s", topic)):
                     return {"種類": "調べてまとめる", "題": topic[:100],
                             "問い": "次に進めるために必要な事実を調べて要点をまとめる", "状態": "選定"}
     except (ImportError, OSError, ValueError, KeyError):
@@ -188,25 +190,8 @@ def _execute(task, base, ask=None):
         slug = __import__("re").sub(r"[^\wぁ-んァ-ヶ一-龠-]", "_", title)[:50] or "学習"
         (notes / (slug + ".md")).write_text("# " + title + "\n\n" + str(body)[:3000] + "\n", encoding="utf-8")
         return "保存済みの学習ノートを読み直し、要点をやることノートにまとめました", True
-    try:
-        import sqlite3
-        card = {"目的": title, "適用条件": task.get("問い", ""), "手順": [
-            "保存済みの関連資料を探す", "根拠を分けて要点をまとめる", "学習画面で提案を確認する"],
-            "確かめ方": "根拠と要点が対応していること", "根拠": []}
-        db = sqlite3.connect(base / "chishiki.sqlite3", timeout=5)
-        try:
-            db.execute("CREATE TABLE IF NOT EXISTS teian (id INTEGER PRIMARY KEY, 題 TEXT NOT NULL, 中身 TEXT NOT NULL, 根拠の記事 TEXT NOT NULL DEFAULT '', 用件の識別 TEXT NOT NULL, 用件の題 TEXT NOT NULL DEFAULT '', 状態 TEXT NOT NULL DEFAULT '提案中', 不要の理由 TEXT NOT NULL DEFAULT '', 作った日時 TEXT NOT NULL, 選んだ日時 TEXT NOT NULL DEFAULT '')")
-            exists = db.execute("SELECT 1 FROM teian WHERE 用件の識別=?", ("yarukoto:" + title,)).fetchone()
-            if not exists:
-                db.execute("INSERT INTO teian(題,中身,根拠の記事,用件の識別,用件の題,状態,作った日時) VALUES(?,?,?,?,?,'提案中',?)",
-                           (title[:100], json.dumps(card, ensure_ascii=False), "", "yarukoto:" + title, title[:100],
-                            time.strftime("%Y-%m-%dT%H:%M:%S%z")))
-            db.commit()
-        finally:
-            db.close()
-        return "提案を学習画面に登録しました（本人への送信はしていません）", True
-    except (ImportError, OSError, ValueError, sqlite3.Error):
-        return "保存資料が見つからず、学習画面に残す候補だけ選びました", False
+    # 10/8 本人: 頭で考えられない時に型どおりの提案（手順が全部同じ）を登録していた。何も書かずに次の機会を待つ。
+    return "頭が空いていないので、今回は見送りました", False
 
 
 def _growth(kind, ok, base):
