@@ -2276,6 +2276,14 @@ function showToolEvent(node, ev){
   }else if (ev.type === "tool_end"){
     const li = [...rows.children].find(x=>x.dataset.toolId === String(ev.id || ""));
     if (li) li.textContent += ` — ${ev.ok ? "完了" : "失敗"}${ev.summary ? ": " + ev.summary : ""}`;
+    // 10/8: 「作る」道具の作品（下見の画像）を答えの下に出す
+    (Array.isArray(ev.画像) ? ev.画像 : []).slice(0,4).forEach(p => {
+      const fig = document.createElement("figure"); fig.className = "sakuhin";
+      fig.style.cssText = "margin:8px 0;max-width:420px";
+      fig.innerHTML = `<img src="/sakuhin?p=${encodeURIComponent(p)}" alt="作った物の下見" style="width:100%;border-radius:10px;border:1px solid var(--line)"><figcaption style="font-size:11px;color:var(--dim);cursor:pointer" title="Finder で見る">${esc(p.replace(/^\/Users\/[^/]+/,"~"))}</figcaption>`;
+      fig.querySelector("figcaption").onclick = () => api("/open",{method:"POST",body:JSON.stringify({パス:p})});
+      details.before(fig);
+    });
   }else{
     const li = document.createElement("li"); li.textContent = String(ev.text || ""); rows.appendChild(li);
   }

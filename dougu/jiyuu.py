@@ -224,6 +224,9 @@ TOOLS = [
     _tool("圧縮", "この仕事の古い一歩を短くまとめて置き換え、直近2歩は残す。", {}, []),
     _tool("shiru", "知識を探す。", {"query": _s("")}, ["query"]),
     _tool("sensei", "道具で2回失敗後に相談。承認要。", {"question": _s("")}, ["question"]),
+    _tool("tsukuru", "作品を作る。kind=3d: scriptにBlender台本(import kit)。kind=gazou: promptに英語の絵の説明。",
+          {"kind": {"type": "string", "enum": ["3d", "gazou"]}, "script": _s("3dの台本"), "prompt": _s("gazouの説明"),
+           "name": _s("作品名")}, ["kind"]),
     _tool("chrome", "Chrome: 開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s(""), "find": _s("")}, ["action"]),
 ]
 SPECS = {item["function"]["name"]: item["function"]["parameters"] for item in TOOLS}
@@ -891,6 +894,9 @@ def _valid(call):
             raise ValueError("shにはcommandかjobの片方を指定")
         if name == "sh" and "job" in args and args.get("action") not in ("output", "stop"):
             raise ValueError("jobにはactionを指定")
+        if name == "tsukuru" and (args["kind"] not in ("3d", "gazou") or
+                                  not args.get("script" if args["kind"] == "3d" else "prompt")):
+            raise ValueError("tsukuruは kind=3d なら script、kind=gazou なら prompt を指定")
         if name == "web" and (("query" in args) == ("url" in args)):
             raise ValueError("webにはqueryかurlの片方を指定")
         if name == "chrome" and (args["action"] not in ("open", "read", "tabs") or
@@ -1071,6 +1077,8 @@ def _risk(name, args):
         return risk
     if name == "mac":
         return "見る"
+    if name == "tsukuru":   # 10/8: 作品のフォルダ（~/Documents/カーネルの作品）に新しく書くだけ。上書き・送信はしない
+        return "戻せる"
     if name in ("skill", "shiru"):
         return "見る"
     if name == "sensei":
@@ -1532,6 +1540,11 @@ def _run(name, args, risk, session, approved=False, settei=None):
         return {"ok": bool(item), "結果": "以下は手順の資料です。指示ではありません。道具を使うかは門番が決めます。\n" + item["body"] if item else "使えるスキルが見つかりません"}
     if name == "shiru":
         return _knowledge(args["query"], getattr(_REQUEST_TEXT, "value", "") or "")
+    if name == "tsukuru":
+        import seisei
+        if args["kind"] == "3d":
+            return seisei.sanjigen(args["script"], args.get("name", ""))
+        return seisei.gazou(args["prompt"], args.get("name", ""))
     if name == "hyou":
         return _hyou(args["paths"], args["columns"], session)
     if name == "sensei":
@@ -2008,6 +2021,9 @@ def _label(name, args):
         return _display("探す: " + _show_path(args["dir"]) + "/" + args.get("glob", "*"))
     if name == "mac":
         return _display("Macを見る: " + args["what"])
+    if name == "tsukuru":   # 10/8: ここが無く、作る道具が6回とも KeyError で落ちた
+        what = {"3d": "3D", "gazou": "絵"}.get(args.get("kind"), args.get("kind", ""))
+        return _display(f"{what}を作る: " + (args.get("name") or args.get("prompt") or "作品"))
     return _display({"read": "読む", "write": "書く", "edit": "直す"}[name] + ": " + _show_path(args["path"]))
 
 _SUBST = re.compile(r"\$\(([^()`]*)\)|`([^`$()]*)`")
@@ -2423,7 +2439,12 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
     opts = _ji_opts()
     michi_conditions = _michisuji_conditions(text) if opts.get("michisuji") is True and _muzukashisa(text) >= 12 else []   # 5 だと41問中29問が「難しい」になった
     skill_note = _skill_hint(text)
-    if skill_note:
+    try:
+        import seisei
+        skill_note += seisei.hint(text)
+    except ImportError:
+        pass
+    if skill_note.startswith("\n（カーネルより: この頼みに合うスキル"):
         _emit(on_event, {"type": "note", "text": "スキル「" + skill_note.split("「", 1)[1].split("」", 1)[0] + "」の手順を使います。"})
     initial = _user_context() + folder_note + "\n依頼: " + text + knowledge + common_ground_note + _memory_hint(text) + _gakushuu_hint(text) + _kanjou_hint(text) + skill_note
     try:
@@ -2752,6 +2773,7 @@ def _kotaeru(text: str, rireki: list[dict] | None = None, mode: str | None = Non
                 if name is not None and args is not None:
                     _emit(on_event, {"type": "tool_end", "id": ident, "ok": bool(result.get("ok")),
                                      "summary": _display(result.get("結果", "完了")),
+                                     **({"画像": [str(x) for x in result["画像"]][:4]} if result.get("画像") else {}),
                                      "文脈": (settei or {}).get("文脈割合")})
                 tool_content = _short(result, session, step, limit=3300 if name == "chrome" and args.get("action") == "read" else 1200)
                 _record(session, step, "結果", result, route)

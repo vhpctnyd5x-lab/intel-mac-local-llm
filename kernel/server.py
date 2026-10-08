@@ -1450,6 +1450,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._json({"error": "合言葉が違います"}, 403)
             return self._json({"一覧": feedback.listing(),
                                "置き場": feedback.folder()})
+        if path == "/sakuhin":
+            # 10/8: 「作る」道具の下見の画像を会話に出す。作品のフォルダの中の画像だけ
+            if not self._ok_token():
+                return self._json({"error": "合言葉が違います"}, 403)
+            import seisei
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            target = os.path.realpath(query.get("p", [""])[0])
+            root = os.path.realpath(str(seisei.ROOT))
+            if not target.startswith(root + os.sep) or not target.lower().endswith((".png", ".jpg", ".jpeg", ".webp")) \
+                    or not os.path.isfile(target):
+                return self._send(404, "ありません", "text/plain; charset=utf-8")
+            with open(target, "rb") as f:
+                data = f.read()
+            kind = "image/png" if target.lower().endswith(".png") else ("image/webp" if target.lower().endswith(".webp") else "image/jpeg")
+            return self._send(200, data, kind)
         if path == "/artifacts":
             if not self._ok_token():
                 return self._json({"error": "合言葉が違います"}, 403)

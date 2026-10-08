@@ -95,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix="jiyuu-test-") as temporary:
     assert captured[0]["cache_prompt"] is True
     assert captured[0]["tools"] == jiyuu.TOOLS
     assert captured[0]["chat_template_kwargs"]["enable_thinking"] is True
-    assert len(captured[0]["tools"]) == 16 and captured[0]["max_tokens"] == 128
+    assert len(captured[0]["tools"]) == 17 and captured[0]["max_tokens"] == 128
     checks += 1
     preview = jiyuu._short({"ok": True, "結果": "A" * 6000}, "long", 1)
     archive = Path(preview.split("全文: ", 1)[1].split(" …", 1)[0])
