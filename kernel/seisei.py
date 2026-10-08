@@ -100,6 +100,49 @@ def gazou(prompt: str, name: str = "", size: int = 512) -> dict:
             "画像": [str(target)], "場所": str(out)}
 
 
+def soto_no_me(image: str, request: str, timeout: int = 240) -> str:
+    """10/8: 下見を NVIDIA の画像を読む模型に見せる（設定「作品を外の目で確かめる」がオンの時だけ呼ぶ）。
+    送るのは 256px に縮めた JPEG と頼みの文だけ。鍵は ~/.nvidia.env を読む（値は出さない）。失敗したら空文字。"""
+    import base64, ssl, tempfile, urllib.request
+    try:
+        key = next((line.split("=", 1)[1].strip().strip('"').strip("'") for line in
+                    open(Path.home() / ".nvidia.env", encoding="utf-8") if line.startswith("NVIDIA_API_KEY=")), "")
+    except OSError:
+        key = ""
+    if not key or not Path(image).is_file():
+        return ""
+    with tempfile.TemporaryDirectory() as tmp:
+        small = Path(tmp) / "mini.jpg"
+        subprocess.run(["/usr/bin/sips", "-s", "format", "jpeg", "-Z", "256", str(image), "--out", str(small)],
+                       capture_output=True, timeout=30)
+        if not small.is_file():
+            return ""
+        b64 = base64.b64encode(small.read_bytes()).decode()
+    question = ("This is a preview render of a 3D model. The request was (Japanese): " + str(request)[:300] +
+                ' Answer only JSON: {"looks_like_request": true/false, "score": 1-10, "problems": ["..."], "fix": "one short instruction"}')
+    body = {"model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", "max_tokens": 400, "temperature": 0.2,
+            "messages": [{"role": "user", "content": f'{question} <img src="data:image/jpeg;base64,{b64}" />'}]}
+    try:
+        import certifi
+        context = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        context = ssl.create_default_context()
+    for _ in range(2):   # 503（混雑）だけ1回やり直す
+        try:
+            req = urllib.request.Request("https://integrate.api.nvidia.com/v1/chat/completions", data=json.dumps(body).encode(),
+                                         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+            answer = json.loads(urllib.request.urlopen(req, timeout=timeout, context=context).read())
+            text = str(answer["choices"][0]["message"]["content"])
+            found = re.findall(r"\{.*\}", text, re.S)
+            return (found[-1] if found else text)[-600:]
+        except urllib.error.HTTPError as error:
+            if error.code != 503:
+                return ""
+        except (OSError, ValueError, KeyError, IndexError):
+            return ""
+    return ""
+
+
 def gazou3d(path: str, name: str = "") -> dict:
     """10/8: 画像1枚から 3D（TripoSR、手元の CPU。背景は Apple Vision で切り抜く）。細かさ256・テクスチャ1024px で約2分。"""
     import sanjigen_gazou
