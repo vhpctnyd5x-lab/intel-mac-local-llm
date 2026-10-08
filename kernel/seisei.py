@@ -100,6 +100,13 @@ def gazou(prompt: str, name: str = "", size: int = 512) -> dict:
             "画像": [str(target)], "場所": str(out)}
 
 
+def gazou3d(path: str, name: str = "") -> dict:
+    """10/8: 画像1枚から 3D（TripoSR、手元の CPU。背景は Apple Vision で切り抜く）。細かさ256・テクスチャ1024px で約2分。"""
+    import sanjigen_gazou
+    out = new_folder(name or "画像から3D")
+    return sanjigen_gazou.run(path, out / "3d", mc_resolution=256, chunk_size=4096, texture=True)
+
+
 def hoka(kind: str, args: dict) -> dict:
     """10/8: 読み上げ（koe）・背景除去（haikei）・動画（douga）。中身は seisei_hoka.py（Mac に最初からある物と Blender だけ）。"""
     import seisei_hoka as h
@@ -111,6 +118,15 @@ def hoka(kind: str, args: dict) -> dict:
     paths = args.get("paths") or ([args["path"]] if args.get("path") else [])
     if paths and str(paths[0]).lower().endswith(".glb"):
         return h.douga("3d", out / "douga", glb_path=paths[0])
+    if len(paths) == 1 and not args.get("audio"):
+        # 10/8: 絵1枚は奥行き（Depth Anything V2 Small）で 2.5D の動画にする（寄るだけより立体的）
+        try:
+            import douga25d
+            result = douga25d.make(paths[0], out / "douga25d", seconds=5)
+            if result.get("ok"):
+                return result
+        except Exception:
+            pass
     return h.douga("gazou", out / "douga", images=paths, audio_path=args.get("audio") or None)
 
 
@@ -128,7 +144,8 @@ def hint(request: str) -> str:
                 body += "\n" + Path(__file__).with_name("sanjigen_shiage.md").read_text(encoding="utf-8")[:2200]
             except OSError:
                 pass
-        return ("\n（カーネルより: 3D は道具 tsukuru（kind=3d、script に Blender の台本）で作る。作品は ~/Documents/カーネルの作品 に入り、"
+        return ("\n（カーネルより: 画像があれば tsukuru（kind=3d、path に画像）で画像から 3D を作る（約2分）。"
+                "画像が無ければ tsukuru（kind=3d、script に Blender の台本）で作る。作品は ~/Documents/カーネルの作品 に入り、"
                 "下見の画像は画面に出る。結果の中心・大きさを見て、意図と違えば台本を直してもう一度）\n" + body)
     try:
         import seisei_hoka

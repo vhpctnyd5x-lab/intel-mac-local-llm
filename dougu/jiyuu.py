@@ -224,7 +224,7 @@ TOOLS = [
     _tool("圧縮", "この仕事の古い一歩を短くまとめて置き換え、直近2歩は残す。", {}, []),
     _tool("shiru", "知識を探す。", {"query": _s("")}, ["query"]),
     _tool("sensei", "道具で2回失敗後に相談。承認要。", {"question": _s("")}, ["question"]),
-    _tool("tsukuru", "作品を作る。3d=script(Blender台本 import kit)、gazou=prompt(英語の絵の説明)、koe=prompt(読み上げる文)、"
+    _tool("tsukuru", "作品を作る。3d=path(画像から3D)かscript(Blender台本 import kit)、gazou=prompt(英語の絵の説明)、koe=prompt(読み上げる文)、"
           "haikei=path(画像の背景を消す)、douga=paths(画像かglbから動画)。",
           {"kind": {"type": "string", "enum": ["3d", "gazou", "koe", "haikei", "douga"]}, "script": _s(""), "prompt": _s(""),
            "path": _s(""), "paths": {"type": "array", "items": _s("")}, "audio": _s(""), "voice": _s(""),
@@ -897,7 +897,7 @@ def _valid(call):
         if name == "sh" and "job" in args and args.get("action") not in ("output", "stop"):
             raise ValueError("jobにはactionを指定")
         if name == "tsukuru":
-            need = {"3d": ("script",), "gazou": ("prompt",), "koe": ("prompt",), "haikei": ("path",), "douga": ("paths", "path")}
+            need = {"3d": ("script", "path"), "gazou": ("prompt",), "koe": ("prompt",), "haikei": ("path",), "douga": ("paths", "path")}
             if args["kind"] not in need or not any(args.get(k) for k in need[args["kind"]]):
                 raise ValueError("tsukuru: 3d=script、gazou/koe=prompt、haikei=path、douga=paths を指定")
         if name == "web" and (("query" in args) == ("url" in args)):
@@ -1556,6 +1556,8 @@ def _run(name, args, risk, session, approved=False, settei=None):
             return {"ok": False, "結果": "門番: 保護された場所、または触ってよいフォルダの外です"}
         if args["kind"] in ("koe", "haikei", "douga"):
             return seisei.hoka(args["kind"], args)
+        if args["kind"] == "3d" and args.get("path") and not args.get("script"):
+            return seisei.gazou3d(args["path"], args.get("name", ""))
         if args["kind"] == "3d":
             return seisei.sanjigen(args["script"], args.get("name", ""))
         return seisei.gazou(args["prompt"], args.get("name", ""))
