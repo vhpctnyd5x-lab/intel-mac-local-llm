@@ -27,6 +27,7 @@ env=dict(os.environ,PATH=str(fake)+':'+os.environ['PATH'])
 launcher=['bash',str(here/'hajimeru.sh')]
 checks=[([str(folder),'--mode','mv'],'single'),
         (['--prepare-only','env','--mode','mv'],'mv'),
+        (['--prepare-only','env','--prepare-max-minutes','50'],'mv'),
         (['--mode','text','--prompt','艤装のあるアニメキャラ'],'text')]
 for args,expected in checks:
     r=subprocess.run(launcher+args,env=env,capture_output=True,text=True,check=True)
@@ -35,7 +36,10 @@ for args,expected in checks:
 r=subprocess.run(launcher+[str(folder),'--mode','mv'],env=env,capture_output=True,text=True,check=True)
 c,_=json.JSONDecoder().raw_decode(r.stdout);assert c['mode']=='mv' and len(c['views'])==2
 for args in [[str(folder),'--faces','0'],[str(folder),'--octree','1024'],['--mode','text'],
-             [str(folder),'--provision','unknown']]:
+             [str(folder),'--provision','unknown'],
+             ['--prepare-only','env','--prepare-max-minutes','51'],
+             ['--prepare-only','env','--prepare-max-minutes','29'],
+             [str(folder),'--prepare-max-minutes','50']]:
     assert subprocess.run(launcher+args,env=env,capture_output=True).returncode!=0
 # シェル内のPythonも構文検査。
 for script in here.glob('*.sh'):
@@ -45,5 +49,7 @@ for script in here.glob('*.sh'):
             end=lines.index('PY',i+1);p=tmp/(script.stem+'-inline.py')
             p.write_text('\n'.join(lines[i+1:end])+'\n');py_compile.compile(str(p),doraise=True);i=end
         i+=1
-print('py_compile（埋込含む）・入力検証8件・dry-runのクラウド非接続: OK')
+print('py_compile（埋込含む）・入力検証12件・dry-runのクラウド非接続: OK')
 PY
+
+python3 "$HERE/test_diagnostics.py"

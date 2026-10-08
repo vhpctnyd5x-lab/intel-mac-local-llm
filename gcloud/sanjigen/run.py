@@ -156,6 +156,7 @@ def stage(name, c):
 
 
 def main():
+    from progress import update
     c = json.loads(pathlib.Path(sys.argv[1]).read_text())
     if len(sys.argv) == 3:
         stage(sys.argv[2], c)
@@ -175,16 +176,17 @@ def main():
         if c['texture'] == 'on': stages.extend(['paint', 'glb'])
         stages.append('preview')
         for name in stages:
+            update(name)
             detail = name; tick = time.monotonic()
             subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve()), sys.argv[1], name], check=True)
             timings[name] = time.monotonic() - tick
             (OUT / 'timings.json').write_text(json.dumps(timings, indent=2))
+            update(name, 'completed')
         state, detail = 'success', 'PBR付き' if c['texture'] == 'on' else '形のみ'
     finally:
         timings['pipeline_seconds'] = time.monotonic() - start
         (OUT / 'timings.json').write_text(json.dumps(timings, indent=2))
-        (OUT / 'status.json').write_text(json.dumps(dict(state=state, detail=detail,
-            mode=c['mode'], texture=c['texture'], config=c), ensure_ascii=False, indent=2))
+        update(detail, state, detail, mode=c['mode'], texture=c['texture'], config=c)
 
 
 if __name__ == '__main__':

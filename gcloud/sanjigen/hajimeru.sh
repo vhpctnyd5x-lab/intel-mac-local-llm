@@ -5,6 +5,8 @@ umask 077
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ZONE=${ZONE:-us-central1-a}; REGION=${ZONE%-*}
 MAX_MINUTES=30
+PREPARE_MINUTES=30
+OUT=
 MODE=mv; TEXTURE=on; FACES=100000; PROVISION=auto; INPUT=; PROMPT=
 PREPARE=; EXECUTE=0; LICENSE=0; OCTREE=384; SEED=12345
 IMAGE_FAMILY=${IMAGE_FAMILY:-common-cu129-ubuntu-2204-nvidia-580}
@@ -14,7 +16,8 @@ usage() {
 使い方: bash gcloud/sanjigen/hajimeru.sh 画像フォルダ [--mode mv|single|text]
   [--texture on|off] [--faces 100000] [--octree 384] [--seed 12345]
   [--provision auto|spot|standard] [--prompt '文章']
-  [--prepare-only env|weights|all] [--accept-license] [--execute]
+  [--prepare-only env|weights|all] [--prepare-max-minutes 30〜50]
+  [--out 保存先] [--accept-license] [--execute]
 環境: PROJECT / BUCKET / ZONE / IMAGE_NAME / IMAGE_FAMILY。既定は実行せず計画表示。
 HELP
 }
@@ -28,6 +31,8 @@ while (($#)); do
     --provision) PROVISION=${2:?}; shift 2;;
     --prompt) PROMPT=${2:?}; shift 2;;
     --prepare-only) PREPARE=${2:?}; shift 2;;
+    --prepare-max-minutes) PREPARE_MINUTES=${2:?}; shift 2;;
+    --out) OUT=${2:?}; shift 2;;
     --execute) EXECUTE=1; shift;;
     --accept-license) LICENSE=1; shift;;
     --help|-h) usage; exit 0;;
@@ -35,6 +40,9 @@ while (($#)); do
     *) [[ -z $INPUT ]] || { usage; exit 2; }; INPUT=$1; shift;;
   esac
 done
+[[ $PREPARE_MINUTES =~ ^(30|[34][0-9]|50)$ ]] || { echo 'prepare-max-minutesは30〜50' >&2; exit 2; }
+if [[ -n $PREPARE ]]; then MAX_MINUTES=$PREPARE_MINUTES
+elif [[ $PREPARE_MINUTES != 30 ]]; then echo '時間延長はprepare-only専用' >&2; exit 2; fi
 [[ $PROVISION == auto || $PROVISION == spot || $PROVISION == standard ]] || exit 2
 [[ $ZONE =~ ^(us-central1|asia-northeast1)-[abc]$ ]] || { echo '許可地域外のZONEです' >&2; exit 2; }
 TMP_WORK=$(mktemp -d)
@@ -48,13 +56,16 @@ cleanup() {
       if [[ ! -s $TMP_WORK/cleanup-live ]]; then FINISHED=1; fi
     fi
   fi
+  if ((CREATED == 1 && FINISHED == 0)) && declare -F capture_serial >/dev/null; then
+    capture_serial || true
+  fi
   # 生存中・状態不明のVMから自己削除権限を奪わない。
   if ((CREATED == 0 || FINISHED == 1)); then
     if ((DELETE_BOUND)); then gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:$SA" --role="projects/$PROJECT/roles/$ROLE" --condition="$DELETE_CONDITION" --quiet >/dev/null; fi
     if ((STORAGE_BOUND)); then gcloud storage buckets remove-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" --role=roles/storage.objectAdmin --condition="$STORAGE_CONDITION" --quiet >/dev/null; fi
     if ((SA_CREATED)); then gcloud iam service-accounts delete "$SA" --project="$PROJECT" --quiet >/dev/null; fi
   elif ((SA_CREATED)); then
-    echo "VM状態未確定。30分のGCP側削除を確認後、$SA のIAMとSAを整理してください。" >&2
+    echo "VM状態未確定。${MAX_MINUTES}分のGCP側削除を確認後、$SA のIAMとSAを整理してください。" >&2
   fi
   rm -rf -- "$TMP_WORK"
   exit "$rc"
@@ -106,7 +117,7 @@ DELETE_BOUND=1
 retry gcloud projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:$SA" --role="projects/$PROJECT/roles/$ROLE" --condition="$DELETE_CONDITION" --quiet >/dev/null
 STORAGE_BOUND=1
 retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member="serviceAccount:$SA" --role=roles/storage.objectAdmin --condition="$STORAGE_CONDITION" --quiet >/dev/null
-tar -czf "$TMP_WORK/code.tar.gz" -C "$HERE" config.py cache.py run.py vm_startup.sh
+tar -czf "$TMP_WORK/code.tar.gz" -C "$HERE" config.py cache.py run.py progress.py vm_startup.sh
 gcloud storage cp "$TMP_WORK/config.json" "$TMP_WORK/code.tar.gz" "$PREFIX/input/"
 if [[ -n $INPUT && $MODE != text && -z $PREPARE ]]; then
   # config.pyで検証済みの4方向PNGのみ。フォルダ内の無関係な資料は送らない。
@@ -115,13 +126,19 @@ if [[ -n $INPUT && $MODE != text && -z $PREPARE ]]; then
     if [[ -f $INPUT/$view.png ]]; then gcloud storage cp "$INPUT/$view.png" "$PREFIX/input/$view.png"; fi
   done
 fi
+cat >"$TMP_WORK/shutdown.sh" <<'SHUTDOWN'
+#!/bin/bash
+if [[ -f /opt/sanjigen/observe.sh ]]; then
+  timeout 25s bash /opt/sanjigen/observe.sh --once >>/tmp/sanjigen-startup.log 2>&1
+fi
+SHUTDOWN
 ARGS=("$RUN_ID" --project="$PROJECT" --zone="$ZONE" --machine-type=g2-standard-8
   --image-project=deeplearning-platform-release --image="$IMAGE"
   --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete
   --service-account="$SA" --scopes=cloud-platform --no-restart-on-failure
   --maintenance-policy=TERMINATE --max-run-duration="${MAX_MINUTES}m" --instance-termination-action=DELETE
-  --labels=job=sanjigen --metadata="sanjigen-bucket=$BUCKET,sanjigen-run=$RUN_ID,sanjigen-image=$IMAGE,install-nvidia-driver=True"
-  --metadata-from-file="startup-script=$HERE/vm_startup.sh" --quiet)
+  --labels=job=sanjigen --metadata="sanjigen-bucket=$BUCKET,sanjigen-run=$RUN_ID,sanjigen-image=$IMAGE,sanjigen-max-minutes=$MAX_MINUTES,install-nvidia-driver=True"
+  --metadata-from-file="startup-script=$HERE/vm_startup.sh,sanjigen-progress=$HERE/progress.py,shutdown-script=$TMP_WORK/shutdown.sh" --quiet)
 create_vm() {
   local provisioning=$1
   CREATED=1 # API応答が途切れても、実際には作成済みの可能性がある。
@@ -137,14 +154,46 @@ elif ! create_vm SPOT; then
   [[ ! -s $TMP_WORK/live ]] || { echo '同名VMがあるため再作成しません' >&2; exit 1; }
   create_vm STANDARD || { cat "$TMP_WORK/create.err" >&2; exit 1; }
 fi
-echo "起動: $RUN_ID。前で待ちます（再試行なし、30分で削除）。成果物: $PREFIX"
+OUT=${OUT:-${HOME}/Documents/カーネルの作品/$RUN_ID}
+mkdir -p -- "$OUT"
+echo "起動: ${RUN_ID}。前で待ちます（再試行なし、${MAX_MINUTES}分で削除）。成果物: $PREFIX"
+capture_serial() {
+  if gcloud compute instances get-serial-port-output "$RUN_ID" --project="$PROJECT" --zone="$ZONE" --port=1 --start=0 >"$TMP_WORK/serial.txt" 2>"$TMP_WORK/serial.err"; then
+    if cp "$TMP_WORK/serial.txt" "$OUT/serial-port-1.txt"; then return 0; fi
+    echo 'シリアル取得済みですが手元への保存に失敗。保存印は返しません' >&2
+    return 1
+  fi
+  cat "$TMP_WORK/serial.err" >&2
+  return 1
+}
 # dougu/matsu.sh gcpと同じ読み取り監視。ただし他のVMを待たず、この1台だけ。
-WAIT_LIMIT=$((SECONDS + 35 * 60))
+WAIT_LIMIT=$((SECONDS + (MAX_MINUTES + 5) * 60))
+POLL=0
 while ((SECONDS < WAIT_LIMIT)); do
   gcloud compute instances list --project="$PROJECT" --zones="$ZONE" --filter="name=$RUN_ID" --format='value(name)' >"$TMP_WORK/live"
   if [[ ! -s $TMP_WORK/live ]]; then FINISHED=1; break; fi
+  # 不意のSpot削除に備え、終了時だけでなく待機中もシリアルを保存する。
+  capture_serial || true
+  if ((POLL % 3 == 0)); then
+    if gcloud storage cp "$PREFIX/startup.log" "$TMP_WORK/startup.log" >/dev/null 2>"$TMP_WORK/log.err"; then
+      cp "$TMP_WORK/startup.log" "$OUT/startup.log"
+      echo "── $(date -u +%FT%TZ) バケットログ末尾"
+      tail -n 8 "$OUT/startup.log"
+    else
+      echo 'ログ未取得（起動前・送信失敗・権限問題の可能性）'
+      tail -n 2 "$TMP_WORK/log.err" >&2
+    fi
+  fi
+  if gcloud storage cp "$PREFIX/vm-finished.json" "$TMP_WORK/vm-finished.json" >/dev/null 2>&1; then
+    if capture_serial; then
+      printf '{"saved":true}\n' >"$TMP_WORK/serial-collected.json"
+      gcloud storage cp "$TMP_WORK/serial-collected.json" "$PREFIX/serial-collected.json" >/dev/null
+    fi
+  fi
+  POLL=$((POLL + 1))
   sleep 20
 done
-((FINISHED)) || { echo '35分で監視終了。GCP側の削除状態を確認してください' >&2; exit 1; }
-bash "$HERE/torimodosu.sh" "$RUN_ID" --bucket "$BUCKET"
+# VM内の台本が動かなかった場合も、GCP期限の直前まで採れたシリアルは残る。
+bash "$HERE/torimodosu.sh" "$RUN_ID" --bucket "$BUCKET" --out "$OUT"
+((FINISHED)) || { echo "${MAX_MINUTES}+5分で監視終了。GCP側の削除状態を確認してください" >&2; exit 1; }
 echo 'VM削除を確認。期限付きIAMとSAを片付けます。'

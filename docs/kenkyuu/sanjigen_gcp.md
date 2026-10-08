@@ -1,6 +1,6 @@
 # 画像から3D：L4 1枚の期限付きGCP試作
 
-確認日：2026-10-08。**台本の作成・ローカル検査のみ。VM起動、課金、GPU推論、commitは未実施。**
+確認日：2026-10-08。**初回準備は本人承認で1回実行済み（後述）。今回の修正ではVM起動・課金・GPU推論・commitはしていない。**
 通常生成を起動から20分以内に終える目標。初回準備は別枠。速度・品質・L4でのPBR完走は未測定で、達成保証ではない。
 
 ## 構成と公式確認
@@ -159,7 +159,7 @@ textのHunyuanDiT、DINOv2、RealESRGAN、u2net、Blender等の依存はそれ�
 | 極薄板や直線部品は手で作り直す | 画像だけから見えない厚さは一意に決まらない。砲身を円柱、板を厚み付き面として作り、生成済みキャラに組むのが安定しやすいという推論。AI生成だけに拘らず下書きを使う |
 
 最初の判定：①clean PNGに全艤装が残る、②raw GLBの前後左右で平面化・伸びがない、③削減で砲身が消えない、④PBRとUVが付く、⑤各段秒数・GPU peakと総秒数を測る。未見の別キャラでも確認する。
-peak VRAMの自動採取はまだ未実装。`nvidia-smi` の段間・推論中の記録を次の実測時に追加し、OOMが出れば解像度・num_chunks・view数を一つずつ下げる。30分上限やライセンス条件は緩めない。
+peak VRAMそのものの自動集計はまだ未実装。今回の送り役で約1分ごとの `nvidia-smi` を記録するが、短いピークは取り逃がす。OOMが出れば解像度・num_chunks・view数を一つずつ下げる。通常生成の30分上限やライセンス条件は緩めない。準備だけ明示指定で最大50分。
 
 ## ローカル検査
 
@@ -167,4 +167,48 @@ peak VRAMの自動採取はまだ未実装。`nvidia-smi` の段間・推論中�
 bash gcloud/sanjigen/verify.sh
 ```
 
-`bash -n`、shellcheck（導入済みの場合だけ）、Python本体と埋込部分のpy_compile、入力検証とdry-runでgcloud非接続を確認。模型API・依存ビルド・GLB材質・クラウドIAM・速度はGPU実行後の判定が必要。静的検査だけで「動いた」とは報告しない。
+`bash -n`、shellcheck（導入済みの場合だけ）、Python本体と埋込部分のpy_compile、入力検証12件とdry-runでgcloud非接続を確認。偽gcloudの正常終了・欠落回収・シリアル保存失敗、状態履歴・Spot通知保持も検査する。模型API・依存ビルド・GLB材質・クラウドIAM・速度はGPU実行後の判定が必要。静的検査だけで「動いた」とは報告しない。
+
+## 2026-10-08 初回の失敗と再準備の費用
+
+本人承認で `--prepare-only env --provision spot --execute` を1回実行。
+`us-central1-a` の `sanjigen-20261008-111928-6178`（g2-standard-8＋L4、Spot）は起動し、30分上限で削除された。
+**初回は0.25ドル前後を使って成果なし**（本人報告による概算。請求明細での確定値ではない）。
+バケットにはinput/code.tar.gzとinput/config.jsonのみ。status・ログ・成果物が無いため、起動台本が開始したか、ビルドの停止箇所、Spot中断の有無は判定不能。
+ローカル回帰検査で、元の起動表示 `$RUN_ID。` がMac標準Bashでは未定義変数として扱われ、VM作成後の監視を止めることを再現。`${RUN_ID}。` に修正した。これは手元の監視停止を説明するが、VM側に成果物が無い原因までは説明しない。
+
+選択：段分割ではなく **`--prepare-max-minutes 50`** を追加。既定30分、prepare-only専用、30〜50の整数のみ。
+準備の実処理は起動から上限の5分前まで（50分指定なら約45分、起動時間を含む）。残りは最終保存・シリアル保存待ち・削除の猶予。
+GCPのmax-run-durationと手元の監視期限（上限＋5分）も連動し、通常生成は延長不可。
+環境作成はソース取得、venv、torch、推論依存、custom-rasterizer、mesh-painter、検査、キャッシュ保存を一度に行う。
+各段の実測値がまだ無いため「env-a/b各30分以内」とは保証できない。分割すると巨大venvの追加保存/復元と2回の起動、キャッシュ依存関係の実装が増える。
+今回は最小変更の延長を選び、まず各段の実測を得る。Spotでの完走保証や途中ビルド再開はない。完成したenv/重みキャッシュのみ次回再利用できる。
+
+| 条件（1回） | 費用の見込み | 根拠 |
+|---|---:|---|
+| Spot、30分 | 約$0.25 | 初回の概算を基準。厳密な現行単価ではない |
+| Spot、50分 | 約$0.42、予算目安$0.50 | $0.25×50/30。追加GCS操作・保存・転送は別、単価不変の仮定 |
+| Spot、30分×2段 | 約$0.50＋追加保存/復元 | 2台とも上限まで使う仮定。短く終われば安くなる |
+
+20分の延長分は約$0.17。2段とも30分使う場合より約$0.08少ない、という条件付きの比較であり、確定請求や最安保証ではない。
+200GiBのpd-balancedはUS料金$0.000136986/GiB時なら30分約$0.014、50分約$0.023（上の初回基準がディスクを含むなら二重加算しない）。
+GCSのキャッシュはVM削除後も残り継続課金。ダウンロード先への転送も別料金。
+Spot単価は変更されるため、実行前に[公式VM料金](https://cloud.google.com/products/compute/pricing)と[公式Spot料金](https://cloud.google.com/spot-vms/pricing)を確認。
+ディスク料金は[公式表](https://cloud.google.com/compute/disks-image-pricing)。
+
+### 新しい診断と回収
+
+- startup-script最初の実行命令からログをローカルとシリアルに出す。GCS宛先のmetadata取得後に即送信し、送り役が約60秒ごとにstatus・ログ・nvidia-smi・dfを送る。metadata取得前の障害やSDK不在/権限問題はGCSへ送れないため、手元のシリアル採取で補う。
+- status.jsonは段の開始/完了ごとに原子的に更新。completed_stagesに時刻を保持し、ビルドの命令と失敗出力をstartup.logへ出す。終了trapで最終状態・成果物を送る。
+- instance/preemptedを5秒間隔で確認し、TRUEは以後消さずpreemption.jsonに保存。shutdown-scriptも最後の送信を試す。[Spotの終了猶予はbest effortで通常最大30秒](https://docs.cloud.google.com/compute/docs/instances/spot)。強制停止で送信が間に合う保証はない。
+- 待機中は約1分ごとにバケットログ末尾8行を表示。シリアルは各監視周期（約20秒）と通常終了時に `get-serial-port-output` で手元のserial-port-1.txtへ保存。成果物送信後のvm-finished.jsonを見て、保存成功のserial-collected.jsonを返すまでVMは最大60秒待って自己削除する。保存失敗でも上限は延ばさず、エラーを表示する。
+- SpotやGCP期限で先に削除されたVMのシリアルは取り直せない。待機中に採れた最新分を残す。手元の停止・ネットワーク障害時は採取できない。[公式シリアル取得](https://docs.cloud.google.com/sdk/gcloud/reference/compute/instances/get-serial-port-output)。
+- torimodosuはstatusが無い/不正でもPython例外で落ちず、最終段・完了印・Spot通知・ログ/シリアルの有無と末尾を報告する。欠落だけから原因や成功を決めつけない。`--out`で保存先を指定できる。
+
+次の再準備1回（今回の承認は修正のみなので、**新しい起動・課金には改めて本人承認が必要**）：
+
+```bash
+bash gcloud/sanjigen/hajimeru.sh --prepare-only env --prepare-max-minutes 50 --provision spot --execute --accept-license
+```
+
+Claudeはこの1行を明示timeout付きrun_in_background（最大70分程度）で起動し、一覧に載せる。台本内で対象VMを待つため別の見張りを重ねない。

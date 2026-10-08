@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from progress import update
 
 BASE = pathlib.Path('/opt/sanjigen')
 CODE21 = '82920d643c0dc2f7bfd7255f45f62d386edfe60c'
@@ -19,10 +20,12 @@ PY = str(BASE / 'venv/bin/python')
 
 
 def run(*args, **kwargs):
+    print("command:", " ".join(map(str, args)), flush=True)
     subprocess.run(args, check=True, **kwargs)
 
 
 def bundle(label, paths, prepare, build):
+    update("cache-" + label)
     # 環境キャッシュはDLVMの具体名・コード・torch・ビルド台本の内容で分離。
     spec = '\n'.join([os.environ['IMAGE'], CODE21, CODE2, 'py310-torch251-cu124-sm89-v1',
                       hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()])
@@ -35,6 +38,7 @@ def bundle(label, paths, prepare, build):
     found = subprocess.run(['gcloud', 'storage', 'cp', prefix + '.sha256', str(digest)],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     if found:
+        update("restore-" + label)
         run('gcloud', 'storage', 'cp', prefix + '.tar', str(archive))
         expected = digest.read_text().split()[0]
         with archive.open('rb') as f:
@@ -42,18 +46,22 @@ def bundle(label, paths, prepare, build):
         if actual != expected:
             raise RuntimeError(f'破損キャッシュ: {prefix}。準備からやり直してください')
         run('tar', '-xf', str(archive), '-C', str(BASE))
+        update('restore-' + label, 'completed')
     else:
         if not prepare:
             raise RuntimeError(f'キャッシュ未準備: {prefix}。--prepare-onlyを先に実行')
         build()
+        update("save-" + label)
         run('tar', '-cf', str(archive), '-C', str(BASE), *paths)
         with archive.open('rb') as f:
             digest.write_text(hash_stream(f) + '\n')
         # SHAオブジェクトが完成印。中断された途中のarchiveを使わない。
         run('gcloud', 'storage', 'cp', str(archive), prefix + '.tar')
         run('gcloud', 'storage', 'cp', str(digest), prefix + '.sha256')
+        update('save-' + label, 'completed')
     archive.unlink()
     digest.unlink()
+    update("cache-" + label, "completed")
 
 
 def hash_stream(stream):
@@ -64,16 +72,23 @@ def hash_stream(stream):
 
 
 def environment():
+    update("source")
     for directory, repo, revision in [('src21', 'Hunyuan3D-2.1', CODE21), ('src2', 'Hunyuan3D-2', CODE2)]:
         archive = BASE / (directory + '.tgz')
         urllib.request.urlretrieve(f'https://api.github.com/repos/Tencent-Hunyuan/{repo}/tarball/{revision}', archive)
         (BASE / directory).mkdir(exist_ok=True)
         run('tar', '-xzf', str(archive), '--strip-components=1', '-C', str(BASE / directory))
         archive.unlink()
+    update("source", "completed")
+    update("venv")
     run('python3.10', '-m', 'venv', str(BASE / 'venv'))
     run(PY, '-m', 'pip', 'install', 'pip==25.0.1', 'setuptools==75.8.2', 'wheel==0.45.1')
+    update('venv', 'completed')
+    update('torch')
     run(PY, '-m', 'pip', 'install', 'torch==2.5.1', 'torchvision==0.20.1', 'torchaudio==2.5.1',
         '--index-url', 'https://download.pytorch.org/whl/cu124')
+    update('torch', 'completed')
+    update('dependencies')
     # UI・訓練・deepspeedは不要。公式pinは保持し、未固定推論依存だけ明示。
     lines = (BASE / 'src21/requirements.txt').read_text().splitlines()
     skip = {'gradio', 'fastapi', 'uvicorn', 'configargparse', 'tb_nightly', 'deepspeed', 'pythreejs', 'timm', 'torchdiffeq'}
@@ -84,10 +99,16 @@ def environment():
     # basicsr 1.4.2の古いtorchvision importを公式2.1の修正と同じ新APIへ。
     old = BASE / 'venv/lib/python3.10/site-packages/basicsr/data/degradations.py'
     old.write_text(old.read_text().replace('torchvision.transforms.functional_tensor', 'torchvision.transforms.functional'))
+    update('dependencies', 'completed')
     paint = BASE / 'src21/hy3dpaint'
+    update('custom-rasterizer')
     run(PY, '-m', 'pip', 'install', '--no-build-isolation', '-e', str(paint / 'custom_rasterizer'))
+    update('custom-rasterizer', 'completed')
+    update('mesh-painter')
     env = dict(os.environ, PATH=str(BASE / 'venv/bin') + ':' + os.environ['PATH'])
     run('bash', 'compile_mesh_painter.sh', cwd=paint / 'DifferentiableRenderer', env=env)
+    update('mesh-painter', 'completed')
+    update('environment-check')
     run(PY, '-m', 'pip', 'check')
     frozen = subprocess.check_output([PY, '-m', 'pip', 'freeze'], text=True)
     (BASE / 'requirements.lock.txt').write_text(frozen)
@@ -95,6 +116,7 @@ def environment():
     # 重みを含まない環境完成印と、第三者ライセンスもソースごと保存。
     (BASE / 'env-manifest.json').write_text(json.dumps(dict(image=os.environ['IMAGE'], code21=CODE21,
         code2=CODE2, cuda=os.environ.get('CUDA_HOME'), architecture='sm89', built_at=time.time()), indent=2))
+    update('environment-check', 'completed')
 
 
 def snapshot(repo, revision, patterns):
@@ -148,7 +170,7 @@ def main():
         code2=CODE2, hf21=HF21, hfmv=HFMV, hfdino=HFDINO, hftext=HFTEXT,
         labels=selected, seconds=time.monotonic()-start), indent=2))
     if c['prepare']:
-        (BASE / 'output/status.json').write_text(json.dumps(dict(state='prepared', detail=c['prepare'])))
+        update('prepare', 'prepared', c['prepare'])
 
 
 if __name__ == '__main__':
