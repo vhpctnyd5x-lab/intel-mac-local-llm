@@ -612,13 +612,54 @@ def _statistics():
         mesh = evaluated.to_mesh()
         try:
             mesh.calc_loop_triangles()
+            corners = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
+            low = [round(min(c[i] for c in corners), 2) for i in range(3)]
+            high = [round(max(c[i] for c in corners), 2) for i in range(3)]
             stats.append(dict(name=obj.name, vertices=len(mesh.vertices), faces=len(mesh.polygons),
+                              center=[round((a + b) / 2, 2) for a, b in zip(low, high)],
+                              size=[round(b - a, 2) for a, b in zip(low, high)],
                               triangles=len(mesh.loop_triangles), uv=bool(mesh.uv_layers.active),
                               uv_islands=uv_islands(types.SimpleNamespace(data=mesh)),
                               materials=[m.name for m in mesh.materials if m]))
         finally:
             evaluated.to_mesh_clear()
     return stats
+
+
+_SYNONYMS = {'sphere': 'uv_sphere', 'uvsphere': 'uv_sphere', 'icosphere': 'uv_sphere', 'ball': 'uv_sphere',
+             'box': 'cube', 'cuboid': 'cube', 'tube': 'cylinder', 'ring': 'torus', 'donut': 'torus',
+             'exportglb': 'export', 'save': 'export', 'saveglb': 'export', 'write': 'export',
+             'render': 'preview', 'snapshot': 'preview', 'subdivide': 'subdivision', 'subsurf': 'subdivision',
+             'smartuv': 'smart_project', 'smartuvproject': 'smart_project', 'uvunwrap': 'unwrap',
+             'setmaterial': 'material', 'color': 'material', 'move': 'transform', 'rotate': 'transform',
+             'scale': 'transform', 'remesh': 'voxel_remesh', 'rig': 'armature'}
+
+
+def _kit_alias(name):
+    """kit.uvSphere・kit.Sphere などの書き違いを、近い正しい関数へ回す。無ければ一覧付きで教える。"""
+    import difflib
+    norm = lambda x: x.lower().replace('_', '')
+    table = {norm(t): t for t in _TOOLS}
+    key = norm(name)
+    target = table.get(key) or _SYNONYMS.get(key)
+    if not target:
+        close = difflib.get_close_matches(key, list(table), n=1, cutoff=.75)
+        target = table[close[0]] if close else None
+    if target:
+        return globals()[target]
+    raise AttributeError(f"kit に {name} はありません")
+
+
+def _signatures():
+    import inspect
+    parts = []
+    for name in _TOOLS:
+        try:
+            params = [p for p in inspect.signature(globals()[name]).parameters]
+        except (TypeError, ValueError):
+            params = []
+        parts.append(f"{name}({', '.join(params)})")
+    return '; '.join(parts)
 
 
 def _worker(payload_path):
@@ -640,6 +681,7 @@ def _worker(payload_path):
         kit = types.ModuleType('kit', '軽い3Dモデリングの道具箱')
         for name in _TOOLS:
             setattr(kit, name, globals()[name])
+        kit.__getattr__ = _kit_alias   # 10/8: 頭脳が uvSphere と書いた（本番の試しで3回とも落ちた）
         sys.modules['kit'] = kit
         import builtins
         def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -661,7 +703,10 @@ def _worker(payload_path):
     except Exception as exc:
         import traceback
         traceback.print_exc()
-        report.update(error=f'{type(exc).__name__}: {exc}', preview=_PREVIEW)
+        error = f'{type(exc).__name__}: {exc}'
+        if isinstance(exc, (AttributeError, TypeError, NameError)):
+            error += '\n使える関数: ' + _signatures()
+        report.update(error=error, preview=_PREVIEW)
     Path(data['report']).write_text(json.dumps(report, ensure_ascii=False), encoding='utf-8')
     if not report['ok']:
         raise RuntimeError(report['error'])

@@ -224,8 +224,10 @@ TOOLS = [
     _tool("圧縮", "この仕事の古い一歩を短くまとめて置き換え、直近2歩は残す。", {}, []),
     _tool("shiru", "知識を探す。", {"query": _s("")}, ["query"]),
     _tool("sensei", "道具で2回失敗後に相談。承認要。", {"question": _s("")}, ["question"]),
-    _tool("tsukuru", "作品を作る。kind=3d: scriptにBlender台本(import kit)。kind=gazou: promptに英語の絵の説明。",
-          {"kind": {"type": "string", "enum": ["3d", "gazou"]}, "script": _s("3dの台本"), "prompt": _s("gazouの説明"),
+    _tool("tsukuru", "作品を作る。3d=script(Blender台本 import kit)、gazou=prompt(英語の絵の説明)、koe=prompt(読み上げる文)、"
+          "haikei=path(画像の背景を消す)、douga=paths(画像かglbから動画)。",
+          {"kind": {"type": "string", "enum": ["3d", "gazou", "koe", "haikei", "douga"]}, "script": _s(""), "prompt": _s(""),
+           "path": _s(""), "paths": {"type": "array", "items": _s("")}, "audio": _s(""), "voice": _s(""),
            "name": _s("作品名")}, ["kind"]),
     _tool("chrome", "Chrome: 開く・読む・タブ一覧。", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": _s(""), "find": _s("")}, ["action"]),
 ]
@@ -876,7 +878,7 @@ def _valid(call):
                 elif "job" in args and "action" not in args:
                     args["action"] = "output"
             for key in ("paths", "columns"):
-                if name in ("trash", "hyou") and isinstance(args.get(key), str):
+                if name in ("trash", "hyou", "tsukuru") and isinstance(args.get(key), str):
                     # 小さいモデルが配列を JSON 文字列にした時だけ、型を戻す。
                     try:
                         items = json.loads(args[key])
@@ -894,9 +896,10 @@ def _valid(call):
             raise ValueError("shにはcommandかjobの片方を指定")
         if name == "sh" and "job" in args and args.get("action") not in ("output", "stop"):
             raise ValueError("jobにはactionを指定")
-        if name == "tsukuru" and (args["kind"] not in ("3d", "gazou") or
-                                  not args.get("script" if args["kind"] == "3d" else "prompt")):
-            raise ValueError("tsukuruは kind=3d なら script、kind=gazou なら prompt を指定")
+        if name == "tsukuru":
+            need = {"3d": ("script",), "gazou": ("prompt",), "koe": ("prompt",), "haikei": ("path",), "douga": ("paths", "path")}
+            if args["kind"] not in need or not any(args.get(k) for k in need[args["kind"]]):
+                raise ValueError("tsukuru: 3d=script、gazou/koe=prompt、haikei=path、douga=paths を指定")
         if name == "web" and (("query" in args) == ("url" in args)):
             raise ValueError("webにはqueryかurlの片方を指定")
         if name == "chrome" and (args["action"] not in ("open", "read", "tabs") or
@@ -1542,6 +1545,17 @@ def _run(name, args, risk, session, approved=False, settei=None):
         return _knowledge(args["query"], getattr(_REQUEST_TEXT, "value", "") or "")
     if name == "tsukuru":
         import seisei
+        resolve = lambda p: str(_home_resolve(gate._expand_shell_vars(str(p))))
+        for key in ("path", "audio"):
+            if args.get(key):
+                args[key] = resolve(args[key])
+        if args.get("paths"):
+            args["paths"] = [resolve(p) for p in args["paths"]]
+        inputs = [args[k] for k in ("path", "audio") if args.get(k)] + list(args.get("paths") or [])
+        if any(_secret_path(p) or not gate.hako.check_path(p, write=False) for p in inputs):
+            return {"ok": False, "結果": "門番: 保護された場所、または触ってよいフォルダの外です"}
+        if args["kind"] in ("koe", "haikei", "douga"):
+            return seisei.hoka(args["kind"], args)
         if args["kind"] == "3d":
             return seisei.sanjigen(args["script"], args.get("name", ""))
         return seisei.gazou(args["prompt"], args.get("name", ""))
@@ -2022,7 +2036,7 @@ def _label(name, args):
     if name == "mac":
         return _display("Macを見る: " + args["what"])
     if name == "tsukuru":   # 10/8: ここが無く、作る道具が6回とも KeyError で落ちた
-        what = {"3d": "3D", "gazou": "絵"}.get(args.get("kind"), args.get("kind", ""))
+        what = {"3d": "3D", "gazou": "絵", "koe": "読み上げ", "haikei": "切り抜き", "douga": "動画"}.get(args.get("kind"), args.get("kind", ""))
         return _display(f"{what}を作る: " + (args.get("name") or args.get("prompt") or "作品"))
     return _display({"read": "読む", "write": "書く", "edit": "直す"}[name] + ": " + _show_path(args["path"]))
 

@@ -33,15 +33,37 @@ def sanjigen(script: str, name: str = "") -> dict:
     out = new_folder(name or "3D")
     result = s.run(script, out, timeout=300)
     stats = result.get("stats") or []
-    parts = [f"{x.get('name')}: 頂点{x.get('vertices')}・面{x.get('faces')}・UV{'あり' if x.get('uv') else 'なし'}"
-             + (f"（島{x.get('uv_islands')}）" if x.get('uv') else "") for x in stats[:12] if isinstance(x, dict)]
+    # 10/8: 頭脳は絵を見られないので、中心と大きさ（m）を返して、重なり・大きさの間違いに自分で気づけるようにする
+    parts = [f"{x.get('name')}: 中心{x.get('center')}・大きさ{x.get('size')}・頂点{x.get('vertices')}・面{x.get('faces')}"
+             f"・UV{'あり' if x.get('uv') else 'なし'}" for x in stats[:16] if isinstance(x, dict)]
+    warn = _overlap_warning(stats)
     files = [str(f) for f in result.get("files") or []]
     if not result.get("ok"):
-        return {"ok": False, "結果": "Blender の台本が失敗しました: " + str(result.get("error") or "")[:300]
+        try:
+            if not any(out.iterdir()):
+                out.rmdir()   # 失敗して空のままの作品フォルダは残さない（空のフォルダだけ）
+        except OSError:
+            pass
+        return {"ok": False, "結果": "Blender の台本が失敗しました: " + str(result.get("error") or "")[:1500]
                 + "\n" + "\n".join(str(result.get("log") or "").splitlines()[-8:]), "画像": []}
     preview = result.get("preview")
     return {"ok": True, "結果": f"作りました（{out}）\nファイル: " + "、".join(Path(f).name for f in files)
-            + ("\n" + "\n".join(parts) if parts else ""), "画像": [str(preview)] if preview else [], "場所": str(out)}
+            + ("\n" + "\n".join(parts) if parts else "") + warn, "画像": [str(preview)] if preview else [], "場所": str(out)}
+
+
+def _overlap_warning(stats) -> str:
+    """中心がほぼ同じ物や、ほかの物の中に隠れた物を知らせる（雪だるまで球が全部同じ場所に重なった）。"""
+    notes = []
+    rows = [x for x in stats if isinstance(x, dict) and x.get("center") and x.get("size")]
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            gap = sum((p - q) ** 2 for p, q in zip(a["center"], b["center"])) ** 0.5
+            scale = max(max(a["size"]), max(b["size"]), 1e-6)
+            if gap < 0.05 * scale:
+                notes.append(f"{a['name']} と {b['name']} がほぼ同じ場所にあります")
+        if rows and max(a["size"]) < 0.02 * max(max(r["size"]) for r in rows):
+            notes.append(f"{a['name']} は他に比べてとても小さい（見えない）")
+    return ("\n確かめ: " + "。".join(notes[:6]) + "。意図と違えば台本を直してもう一度") if notes else ""
 
 
 def gazou_settei() -> dict | None:
@@ -78,6 +100,20 @@ def gazou(prompt: str, name: str = "", size: int = 512) -> dict:
             "画像": [str(target)], "場所": str(out)}
 
 
+def hoka(kind: str, args: dict) -> dict:
+    """10/8: 読み上げ（koe）・背景除去（haikei）・動画（douga）。中身は seisei_hoka.py（Mac に最初からある物と Blender だけ）。"""
+    import seisei_hoka as h
+    out = new_folder(args.get("name") or {"koe": "読み上げ", "haikei": "切り抜き", "douga": "動画"}[kind])
+    if kind == "koe":
+        return h.koe(args["prompt"], voice=args.get("voice") or "Kyoko", out_dir=out / "koe")
+    if kind == "haikei":
+        return h.haikei(args["path"], out / "haikei")
+    paths = args.get("paths") or ([args["path"]] if args.get("path") else [])
+    if paths and str(paths[0]).lower().endswith(".glb"):
+        return h.douga("3d", out / "douga", glb_path=paths[0])
+    return h.douga("gazou", out / "douga", images=paths, audio_path=args.get("audio") or None)
+
+
 def hint(request: str) -> str:
     """頼みが生成の話の時だけ、使い方を添える（いつも入れると文脈を食う）。"""
     text = str(request or "")
@@ -89,6 +125,14 @@ def hint(request: str) -> str:
             body = ""
         return ("\n（カーネルより: 3D は道具 tsukuru（kind=3d、script に Blender の台本）で作る。作品は ~/Documents/カーネルの作品 に入り、"
                 "下見の画像は画面に出る。失敗したら台本を直してもう一度）\n" + body)
+    try:
+        import seisei_hoka
+        extra = seisei_hoka.hint(text) if re.search(r"読み上げ|音声|ナレーション|背景|切り抜|動画|映像|一周", text) else ""
+    except ImportError:
+        extra = ""
+    if extra:
+        return ("\n（カーネルより: 次の作る道具が使えます。作品は ~/Documents/カーネルの作品 に入ります。"
+                "引数は tsukuru の kind・prompt（読み上げの文）・path / paths（手元の画像や glb）・audio・voice に置き換える）\n" + extra)
     if re.search(r"画像|絵|イラスト|写真を作|描いて|描く|生成", text):
         return ("\n（カーネルより: 絵は道具 tsukuru（kind=gazou、prompt は英語の短い説明。例 'a red fox in snow, watercolor'）で描く。"
                 "作品は ~/Documents/カーネルの作品 に入り、画面に出る）")
