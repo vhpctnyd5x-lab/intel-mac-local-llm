@@ -149,7 +149,7 @@ if [[ $PROVISION == standard ]]; then
 elif ! create_vm SPOT; then
   cat "$TMP_WORK/create.err" >&2
   # IAM・画像・ディスク・quota等の失敗では通常VMに落とさない。
-  if [[ $PROVISION != auto ]] || ! rg -q 'ZONE_RESOURCE_POOL_EXHAUSTED|RESOURCE_POOL_EXHAUSTED|does not have enough resources' "$TMP_WORK/create.err"; then exit 1; fi
+  if [[ $PROVISION != auto ]] || ! grep -Eq 'ZONE_RESOURCE_POOL_EXHAUSTED|RESOURCE_POOL_EXHAUSTED|does not have enough resources' "$TMP_WORK/create.err"; then exit 1; fi
   gcloud compute instances list --project="$PROJECT" --zones="$ZONE" --filter="name=$RUN_ID" --format='value(name)' >"$TMP_WORK/live"
   [[ ! -s $TMP_WORK/live ]] || { echo '同名VMがあるため再作成しません' >&2; exit 1; }
   create_vm STANDARD || { cat "$TMP_WORK/create.err" >&2; exit 1; }

@@ -89,6 +89,20 @@ def stage(name, c):
             import bpy  # noqa: F401
         except ImportError:  # 上流が import だけする。save_glb=False なので呼ばれない。
             import types; sys.modules['bpy'] = types.ModuleType('bpy')
+        # 上流の compile_mesh_painter.sh は python3-config が無いと拡張子なしの名前で作り、読めない（10/10）。
+        # cache.py を変えると保存済みの環境の鍵が変わるので、ここで足りなければ作る（約7秒）。
+        renderer = BASE / 'src21/hy3dpaint/DifferentiableRenderer'
+        try:
+            sys.path.insert(0, str(renderer))
+            from mesh_inpaint_processor import meshVerticeInpaint  # noqa: F401
+        except ImportError:
+            import sysconfig
+            includes = subprocess.check_output([sys.executable, '-m', 'pybind11', '--includes'], text=True).split()
+            subprocess.run(['c++', '-O3', '-Wall', '-shared', '-std=c++11', '-fPIC', *includes, 'mesh_inpaint_processor.cpp',
+                '-o', 'mesh_inpaint_processor' + sysconfig.get_config_var('EXT_SUFFIX')], cwd=renderer, check=True)
+            from mesh_inpaint_processor import meshVerticeInpaint  # noqa: F401
+        finally:
+            sys.path.remove(str(renderer))
         from textureGenPipeline import Hunyuan3DPaintConfig, Hunyuan3DPaintPipeline
         config = Hunyuan3DPaintConfig(max_num_view=6, resolution=512)
         config.realesrgan_ckpt_path = str(BASE / 'src21/hy3dpaint/ckpt/RealESRGAN_x4plus.pth')
