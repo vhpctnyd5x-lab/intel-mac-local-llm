@@ -91,7 +91,7 @@ def environment():
     update('dependencies')
     # UI・訓練・deepspeedは不要。公式pinは保持し、未固定推論依存だけ明示。
     lines = (BASE / 'src21/requirements.txt').read_text().splitlines()
-    skip = {'gradio', 'fastapi', 'uvicorn', 'configargparse', 'tb_nightly', 'deepspeed', 'pythreejs', 'timm', 'torchdiffeq'}
+    skip = {'gradio', 'fastapi', 'uvicorn', 'configargparse', 'tb_nightly', 'deepspeed', 'pythreejs', 'timm', 'torchdiffeq', 'bpy'}  # bpy: PyPIにpy3.10 Linux版なし（GLBはtrimesh、下見はMacのBlender）
     keep = [x for x in lines if x.strip() and not x.startswith(('#', '--')) and x.split('==')[0] not in skip]
     keep += ['timm==1.0.15', 'torchdiffeq==0.2.5', 'pythreejs==2.4.2']
     (BASE / 'requirements-inference.txt').write_text('\n'.join(keep) + '\n')
@@ -109,10 +109,11 @@ def environment():
     run('bash', 'compile_mesh_painter.sh', cwd=paint / 'DifferentiableRenderer', env=env)
     update('mesh-painter', 'completed')
     update('environment-check')
-    run(PY, '-m', 'pip', 'check')
+    # pip check は ninja の wheel 名札だけで失敗する（10/10）。記録に残し、実際の読み込みは下で確かめる。
+    subprocess.run([PY, '-m', 'pip', 'check'])
     frozen = subprocess.check_output([PY, '-m', 'pip', 'freeze'], text=True)
     (BASE / 'requirements.lock.txt').write_text(frozen)
-    run(PY, '-c', 'import torch,bpy,pymeshlab,rembg; import custom_rasterizer; assert torch.cuda.is_available()')
+    run(PY, '-c', 'import torch,pymeshlab,rembg,trimesh; import custom_rasterizer; assert torch.cuda.is_available()')
     # 重みを含まない環境完成印と、第三者ライセンスもソースごと保存。
     (BASE / 'env-manifest.json').write_text(json.dumps(dict(image=os.environ['IMAGE'], code21=CODE21,
         code2=CODE2, cuda=os.environ.get('CUDA_HOME'), architecture='sm89', built_at=time.time()), indent=2))

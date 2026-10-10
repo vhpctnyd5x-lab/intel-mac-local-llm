@@ -85,6 +85,10 @@ def stage(name, c):
         os.environ['HF_HOME'] = str(BASE / 'stores/paint21')
         os.chdir(BASE / 'src21')
         sys.path.insert(0, str(BASE / 'src21/hy3dpaint'))
+        try:
+            import bpy  # noqa: F401
+        except ImportError:  # 上流が import だけする。save_glb=False なので呼ばれない。
+            import types; sys.modules['bpy'] = types.ModuleType('bpy')
         from textureGenPipeline import Hunyuan3DPaintConfig, Hunyuan3DPaintPipeline
         config = Hunyuan3DPaintConfig(max_num_view=6, resolution=512)
         config.realesrgan_ckpt_path = str(BASE / 'src21/hy3dpaint/ckpt/RealESRGAN_x4plus.pth')
@@ -96,26 +100,24 @@ def stage(name, c):
         pipeline(mesh_path=str(OUT / 'shape.obj'), image_path=str(OUT / 'front-clean.png'),
                  output_mesh_path=str(OUT / 'textured.obj'), use_remesh=False, save_glb=False)
     elif name == 'glb':
-        import bpy
-        bpy.ops.wm.read_factory_settings(use_empty=True)
-        bpy.ops.wm.obj_import(filepath=str(OUT / 'textured.obj'))
-        material = bpy.data.materials.new('Hunyuan-PBR')
-        material.use_nodes = True
-        nodes, links = material.node_tree.nodes, material.node_tree.links
-        shader = nodes.get('Principled BSDF')
-        for suffix, slot in [('', 'Base Color'), ('_metallic', 'Metallic'), ('_roughness', 'Roughness')]:
-            file = OUT / ('textured' + suffix + '.jpg')
-            if not file.is_file(): raise RuntimeError(f'PBRマップがありません: {file.name}')
-            tex = nodes.new('ShaderNodeTexImage'); tex.image = bpy.data.images.load(str(file))
-            if suffix: tex.image.colorspace_settings.name = 'Non-Color'
-            links.new(tex.outputs['Color'], shader.inputs[slot])
-        for obj in bpy.context.scene.objects:
-            if obj.type == 'MESH':
-                if not obj.data.uv_layers: raise RuntimeError('UVがありません')
-                obj.data.materials.clear(); obj.data.materials.append(material)
-                for polygon in obj.data.polygons: polygon.use_smooth = True
+        # bpy は PyPI に py3.10 Linux 版が無いので trimesh で書く（10/10）。金属=B・粗さ=G の1枚にまとめる。
+        import trimesh
+        from PIL import Image
+        files = {k: OUT / ('textured' + k + '.jpg') for k in ('', '_metallic', '_roughness')}
+        for f in files.values():
+            if not f.is_file(): raise RuntimeError(f'PBRマップがありません: {f.name}')
+        base = Image.open(files['']).convert('RGB')
+        metal = Image.open(files['_metallic']).convert('L').resize(base.size)
+        rough = Image.open(files['_roughness']).convert('L').resize(base.size)
+        mr = Image.merge('RGB', (Image.new('L', base.size, 0), rough, metal))
+        mesh = trimesh.load(OUT / 'textured.obj', force='mesh', process=False)
+        uv = getattr(mesh.visual, 'uv', None)
+        if uv is None or len(uv) != len(mesh.vertices): raise RuntimeError('UVがありません')
+        material = trimesh.visual.material.PBRMaterial(name='Hunyuan-PBR', baseColorTexture=base,
+            metallicRoughnessTexture=mr, metallicFactor=1.0, roughnessFactor=1.0)
+        mesh.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
         candidate = OUT / 'textured.glb'
-        bpy.ops.export_scene.gltf(filepath=str(candidate), export_format='GLB', use_active_scene=True)
+        mesh.export(candidate)
         with candidate.open('rb') as stream:
             if stream.read(4) != b'glTF': raise RuntimeError('GLBヘッダが不正')
             stream.read(8)
@@ -127,32 +129,6 @@ def stage(name, c):
             for k in ('baseColorTexture', 'metallicRoughnessTexture')) for m in materials):
             raise RuntimeError('GLBのPBRテクスチャ埋込に失敗')
         candidate.replace(OUT / 'model.glb')
-    elif name == 'preview':
-        import bpy
-        from mathutils import Vector
-        bpy.ops.wm.read_factory_settings(use_empty=True)
-        bpy.ops.import_scene.gltf(filepath=str(OUT / 'model.glb'))
-        objects = [o for o in bpy.context.scene.objects if o.type == 'MESH']
-        if not objects: raise RuntimeError('GLBにメッシュなし')
-        corners = [o.matrix_world @ Vector(x) for o in objects for x in o.bound_box]
-        lo = Vector(tuple(min(v[i] for v in corners) for i in range(3)))
-        hi = Vector(tuple(max(v[i] for v in corners) for i in range(3)))
-        center = (lo + hi) / 2
-        radius = max((hi-lo).length, 0.1)
-        bpy.ops.object.camera_add(location=center + Vector((1.2, -1.8, 1.0)) * radius)
-        camera = bpy.context.object
-        camera.rotation_euler = (center-camera.location).to_track_quat('-Z', 'Y').to_euler()
-        camera.data.type = 'ORTHO'; camera.data.ortho_scale = radius * 1.1
-        scene = bpy.context.scene; scene.camera = camera
-        scene.world = bpy.data.worlds.new('背景'); scene.world.color = (0.3, 0.3, 0.3)
-        for offset in [(1, -2, 3), (-2, -1, 1)]:
-            bpy.ops.object.light_add(type='AREA', location=center + Vector(offset) * radius)
-            light = bpy.context.object; light.data.energy = 400 * radius**2; light.data.size = radius * 2
-            light.rotation_euler = (center-light.location).to_track_quat('-Z', 'Y').to_euler()
-        scene.render.engine = 'CYCLES'; scene.cycles.device = 'CPU'; scene.cycles.samples = 12
-        scene.render.resolution_x = 512; scene.render.resolution_y = 512; scene.render.resolution_percentage = 100
-        scene.render.image_settings.file_format = 'PNG'; scene.render.filepath = str(OUT / 'preview.png')
-        bpy.ops.render.render(write_still=True)
 
 
 def main():
@@ -174,7 +150,7 @@ def main():
                     str(BASE / 'input' / (view+'.png'))], check=True)
         stages = (['text'] if c['mode'] == 'text' else []) + ['background', 'shape', 'decimate']
         if c['texture'] == 'on': stages.extend(['paint', 'glb'])
-        stages.append('preview')
+        # 下見の絵は持ち帰ってから Mac の Blender で作る（VM に bpy が無い）。
         for name in stages:
             update(name)
             detail = name; tick = time.monotonic()

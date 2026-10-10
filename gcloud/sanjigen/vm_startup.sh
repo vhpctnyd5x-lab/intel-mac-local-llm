@@ -34,7 +34,7 @@ finish() {
     done
   fi
   if [[ -n ${NAME:-} && -n ${PROJECT:-} && -n ${ZONE:-} ]]; then
-    timeout 30s gcloud compute instances delete "$NAME" --project="$PROJECT" --zone="$ZONE" --async --quiet
+    timeout 90s gcloud compute instances delete "$NAME" --project="$PROJECT" --zone="$ZONE" --quiet  # --async はVMのgcloudに無い（10/10）
   fi
   exit "$rc"
 }

@@ -18,4 +18,8 @@ if ! gcloud storage rsync --recursive --exclude='^input/.*' "gs://$BUCKET/sanjig
   echo '回収失敗。手元にあるシリアル・ログから分かったことを表示します' >&2
 fi
 echo "取り戻し: $OUT"
+BLENDER=/Applications/Blender.app/Contents/MacOS/Blender
+if [[ -s $OUT/model.glb && ! -s $OUT/preview.png && -x $BLENDER ]]; then
+  "$BLENDER" -b --factory-startup -P "$HERE/shitami.py" -- "$OUT/model.glb" "$OUT/preview.png" >"$OUT/shitami.log" 2>&1 || echo '下見の絵は作れませんでした（shitami.log）' >&2
+fi
 python3 "$HERE/report.py" "$OUT"

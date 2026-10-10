@@ -91,7 +91,7 @@ SA_ID="sj-${RUN_ID#sanjigen-}"; SA="$SA_ID@$PROJECT.iam.gserviceaccount.com"
 ROLE=sanjigenVmDelete
 EXPIRES=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc)+d.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
 DELETE_CONDITION="title=$RUN_ID,expression=request.time < timestamp('$EXPIRES') && resource.name.endsWith('/instances/$RUN_ID'),description=期限付き単一VM自己削除"
-STORAGE_CONDITION="title=$RUN_ID,expression=request.time < timestamp('$EXPIRES') && (resource.name.startsWith('projects/_/buckets/$BUCKET/objects/sanjigen/$RUN_ID/') || resource.name.startsWith('projects/_/buckets/$BUCKET/objects/cache/sanjigen/')),description=期限付き成果物とキャッシュ"
+STORAGE_CONDITION="title=$RUN_ID,expression=request.time < timestamp('$EXPIRES') && (resource.name == 'projects/_/buckets/$BUCKET' || resource.name.startsWith('projects/_/buckets/$BUCKET/objects/sanjigen/$RUN_ID/') || resource.name.startsWith('projects/_/buckets/$BUCKET/objects/cache/sanjigen/')),description=期限付き成果物とキャッシュ"
 retry() { local i; for i in 1 2 3 4 5 6; do "$@" && return 0; sleep 5; done; return 1; }
 if ! gcloud storage buckets describe "gs://$BUCKET" --project="$PROJECT" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT" --location="$REGION" --uniform-bucket-level-access --public-access-prevention --quiet
